@@ -31,10 +31,20 @@ t.Run() // blocks on the platform event loop until Quit
 
 - **Core** (`Tray`, `Menu`, `MenuItem`, item activation/toggle, `Backend`
   interface, headless backend) — done, **100% covered**, builds on every arch.
-- **Native backends** — the substantial next increment. A tray can only be
-  verified on a live desktop session, so each backend ships with on-device
-  confirmation rather than being asserted from headless CI. Until a backend is
-  present for the current OS, `Run` returns `ErrNoBackend`; supply one (or the
-  headless backend) via `WithBackend`.
+- **Native backends** are opt-in via the `tray_native` build tag, so the core
+  keeps its 100% coverage gate while the native code is compile-verified per-OS
+  in CI. A tray can only be *runtime*-verified on a live desktop session.
+  - **darwin** — implemented: `NSStatusItem`+`NSMenu` via ebitengine/purego,
+    CGO=0. Compile-verified; **runtime confirmation on a real macOS session is
+    pending**. Build/run your app with `-tags tray_native`.
+  - **windows** / **linux** — next increments (currently `nil` under the tag →
+    `ErrNoBackend`).
+
+Without the tag (or a native backend for the OS), `Run` returns `ErrNoBackend`;
+supply one — including the headless backend — via `WithBackend`.
+
+```sh
+go run -tags tray_native ./cmd/yourapp   # link the macOS NSStatusItem backend
+```
 
 BSD-3-Clause. Copyright the go-widgets authors.
