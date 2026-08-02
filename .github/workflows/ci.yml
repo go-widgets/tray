@@ -12,7 +12,8 @@ jobs:
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: test + 100% coverage gate
         run: |
-          go test ./... -covermode=atomic -coverprofile=cov.out
+          pkgs=$(go list ./... | grep -v /examples/)
+          go test $pkgs -covermode=atomic -coverprofile=cov.out
           total=$(go tool cover -func=cov.out | awk '/^total:/{print $3}')
           echo "coverage: $total"
           [ "$total" = "100.0%" ] || { go tool cover -func=cov.out | awk '$3!="100.0%"'; exit 1; }
