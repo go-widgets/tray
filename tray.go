@@ -174,6 +174,32 @@ func (t *Tray) Run() error {
 	return t.backend.Run(t)
 }
 
+// attacher is the optional Backend capability to add the tray to a run loop the
+// HOST already owns, instead of starting (and blocking on) its own. A backend
+// implements it when a host application with its own platform event loop — e.g.
+// a GUI app that already runs [NSApp run] for its window — wants a tray icon
+// too. Backends that can't attach (headless, or a platform without native
+// support) simply don't implement it, and Attach reports ErrNoBackend.
+type attacher interface {
+	Attach(t *Tray) error
+}
+
+// Attach shows the tray inside a host-owned event loop and returns immediately,
+// instead of Run's block-until-Quit. Use it from an application that already
+// drives the platform's main run loop (its own window): Run would try to start
+// a second loop, whereas Attach just registers the tray with the running one.
+// It must be called on the platform's main/UI thread. Returns ErrNoBackend when
+// the active backend does not support attaching.
+func (t *Tray) Attach() error {
+	if t.backend == nil {
+		return ErrNoBackend
+	}
+	if a, ok := t.backend.(attacher); ok {
+		return a.Attach(t)
+	}
+	return ErrNoBackend
+}
+
 // Quit stops the tray's event loop.
 func (t *Tray) Quit() {
 	if t.backend != nil {
