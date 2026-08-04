@@ -65,11 +65,12 @@ func nsImageFromPNG(png []byte) objc.ID {
 	return img
 }
 
-func (b *darwinBackend) Run(t *Tray) error {
-	runtime.LockOSThread()
-
+// prepare resolves the shared NSApplication + builds the click-dispatch target
+// class and the status-bar item. Shared by Run and Attach; it does NOT touch
+// the activation policy or start a run loop, so a host that owns those is
+// unaffected.
+func (b *darwinBackend) prepare(t *Tray) {
 	b.app = class("NSApplication").Send(sel("sharedApplication"))
-	b.app.Send(sel("setActivationPolicy:"), nsApplicationActivationPolicyAccessory)
 
 	// a target class whose -handle: reads the sender's tag and activates it
 	b.targetCls, _ = objc.RegisterClass(
@@ -94,7 +95,25 @@ func (b *darwinBackend) Run(t *Tray) error {
 
 	b.apply(t)
 	t.ready()
+}
+
+func (b *darwinBackend) Run(t *Tray) error {
+	runtime.LockOSThread()
+	b.prepare(t)
+	// Run owns the whole process: it is a pure menu-bar app, so hide the dock
+	// tile and start the AppKit run loop (blocks until Quit).
+	b.app.Send(sel("setActivationPolicy:"), nsApplicationActivationPolicyAccessory)
 	b.app.Send(sel("run"))
+	return nil
+}
+
+// Attach adds the status item to the host's already-running NSApplication and
+// returns immediately: no LockOSThread (the host is already on its AppKit main
+// thread), no activation-policy change (the host stays a Regular, dock-visible
+// app), and no [NSApp run] (the host owns the loop). Call it from the host's
+// main/UI thread before or during its own run loop.
+func (b *darwinBackend) Attach(t *Tray) error {
+	b.prepare(t)
 	return nil
 }
 

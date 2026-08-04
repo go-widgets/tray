@@ -107,3 +107,37 @@ func TestDefaultBackendNil(t *testing.T) {
 		t.Error("defaultBackend is nil until a native backend is added")
 	}
 }
+
+// fakeAttachBackend is a Headless that also implements the optional attacher
+// capability, to exercise Tray.Attach's "backend supports attach" branch.
+type fakeAttachBackend struct {
+	Headless
+	attached int
+}
+
+func (f *fakeAttachBackend) Attach(t *Tray) error {
+	f.attached++
+	t.ready()
+	return nil
+}
+
+func TestTrayAttach(t *testing.T) {
+	// nil backend → ErrNoBackend.
+	if err := (New([]byte("PNG")).WithBackend(nil)).Attach(); err != ErrNoBackend {
+		t.Fatalf("nil-backend Attach = %v, want ErrNoBackend", err)
+	}
+	// backend without attach support (Headless) → ErrNoBackend.
+	if err := New([]byte("PNG")).WithBackend(NewHeadless()).Attach(); err != ErrNoBackend {
+		t.Fatalf("non-attacher Attach = %v, want ErrNoBackend", err)
+	}
+	// backend that supports attach → delegates, no error, fires OnReady.
+	fb := &fakeAttachBackend{Headless: *NewHeadless()}
+	ready := false
+	tr := New([]byte("PNG")).WithBackend(fb).OnReady(func() { ready = true })
+	if err := tr.Attach(); err != nil {
+		t.Fatalf("attacher Attach = %v, want nil", err)
+	}
+	if fb.attached != 1 || !ready {
+		t.Fatalf("attach not delegated: attached=%d ready=%v", fb.attached, ready)
+	}
+}
