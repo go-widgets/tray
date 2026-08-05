@@ -7,11 +7,18 @@ package tray
 // compile-verified in CI but its runtime behaviour must be confirmed on a real
 // macOS session — a menu-bar item cannot be verified headlessly.
 //
-// Threading: AppKit requires all UI work on the process's main OS thread and
-// [NSApp run] blocks it, so Tray.Run must be called from main (this backend
-// LockOSThread's the calling goroutine). Menu clicks are dispatched back to
-// MenuItem.Activate via a runtime-built target class whose action reads the
-// clicked NSMenuItem's integer tag.
+// Threading: AppKit is main-thread-only. Every NSStatusBar/NSStatusItem/NSMenu
+// call therefore runs on the process main thread, marshalled there through
+// -performSelectorOnMainThread: (see runOnMain). This matters most for Attach,
+// which joins a host's already-running run loop: the goroutine that calls Attach
+// is not pinned to the main OS thread, so issuing AppKit calls on it directly
+// intermittently raised an Objective-C exception (→ SIGABRT) when the goroutine
+// happened to be scheduled on a non-main thread. Marshalling removes that race
+// for both the Attach (join) and Run (own-the-loop) paths.
+//
+// Menu clicks are dispatched back to MenuItem.Activate via a runtime-built target
+// class whose action reads the clicked NSMenuItem's integer tag; that tag indexes
+// the shared, unit-tested leafItems() table.
 
 import (
 	"runtime"
@@ -40,9 +47,11 @@ type darwinBackend struct {
 	app       objc.ID
 	statusBar objc.ID
 	item      objc.ID
-	items     []*MenuItem // indexed by NSMenuItem tag
+	items     []*MenuItem // tag -> item; sourced from the shared leafItems()
+	tagSeq    int         // running leaf index while an NSMenu is being built
 	targetCls objc.Class
 	target    objc.ID
+	pending   *Tray // tray the main-thread setup/refresh selectors act on
 }
 
 func newNativeBackend() Backend { return &darwinBackend{} }
@@ -65,36 +74,72 @@ func nsImageFromPNG(png []byte) objc.ID {
 	return img
 }
 
-// prepare resolves the shared NSApplication + builds the click-dispatch target
-// class and the status-bar item. Shared by Run and Attach; it does NOT touch
-// the activation policy or start a run loop, so a host that owns those is
-// unaffected.
+// prepare builds the click-dispatch target class and its instance (neither
+// touches AppKit, so this is safe on whatever goroutine/thread called Run or
+// Attach), then marshals the actual AppKit setup onto the main thread. Shared by
+// Run and Attach; it does NOT touch the activation policy or start a run loop, so
+// a host that owns those is unaffected.
 func (b *darwinBackend) prepare(t *Tray) {
-	b.app = class("NSApplication").Send(sel("sharedApplication"))
+	b.pending = t
 
-	// a target class whose -handle: reads the sender's tag and activates it
+	// A target class whose -handle: reads the sender's tag and activates it, plus
+	// two main-thread trampolines: -goTraySetup: creates the status item and
+	// applies state, -goTrayRefresh: re-applies state after a change.
 	b.targetCls, _ = objc.RegisterClass(
 		"GoWidgetsTrayTarget",
 		objc.GetClass("NSObject"),
 		nil,
 		nil,
-		[]objc.MethodDef{{
-			Cmd: sel("handle:"),
-			Fn: objc.NewIMP(func(self objc.ID, _cmd objc.SEL, sender objc.ID) {
-				tag := int(sender.Send(sel("tag")))
-				if tag >= 0 && tag < len(b.items) {
-					b.items[tag].Activate()
-				}
-			}),
-		}},
+		// MethodDef.Fn is the raw Go func; RegisterClass wraps it with NewIMP
+		// itself (wrapping it here would make it re-wrap an IMP and panic).
+		[]objc.MethodDef{
+			{
+				Cmd: sel("handle:"),
+				Fn: func(self objc.ID, _cmd objc.SEL, sender objc.ID) {
+					dispatchLeaf(b.items, int(sender.Send(sel("tag"))))
+				},
+			},
+			{
+				Cmd: sel("goTraySetup:"),
+				Fn: func(self objc.ID, _cmd objc.SEL, _ objc.ID) {
+					b.setupOnMain()
+				},
+			},
+			{
+				Cmd: sel("goTrayRefresh:"),
+				Fn: func(self objc.ID, _cmd objc.SEL, _ objc.ID) {
+					b.apply(b.pending)
+				},
+			},
+		},
 	)
 	b.target = objc.ID(b.targetCls).Send(sel("alloc")).Send(sel("init"))
 
+	// All AppKit work happens inside setupOnMain, on the main thread.
+	b.runOnMain(sel("goTraySetup:"))
+	t.ready()
+}
+
+// runOnMain performs selector s on the process main thread and blocks until it
+// completes. On the main thread Cocoa runs it inline (so it also works before a
+// run loop is started, i.e. the Run path); from any other thread it is queued on
+// the host's running main run loop (the Attach path). A nil target — Refresh
+// before prepare — makes it a safe Objective-C nil-message no-op.
+func (b *darwinBackend) runOnMain(s objc.SEL) {
+	b.target.Send(sel("performSelectorOnMainThread:withObject:waitUntilDone:"), s, objc.ID(0), true)
+}
+
+// setupOnMain resolves the shared NSApplication, creates the status-bar item and
+// applies the tray state. It runs on the main thread (AppKit requirement) via
+// runOnMain.
+func (b *darwinBackend) setupOnMain() {
+	b.app = class("NSApplication").Send(sel("sharedApplication"))
 	b.statusBar = class("NSStatusBar").Send(sel("systemStatusBar"))
 	b.item = b.statusBar.Send(sel("statusItemWithLength:"), nsVariableStatusItemLength)
-
-	b.apply(t)
-	t.ready()
+	// statusItemWithLength: hands back an autoreleased reference; retain it so the
+	// NSStatusItem lives for the whole process and can't be freed mid-use.
+	b.item.Send(sel("retain"))
+	b.apply(b.pending)
 }
 
 func (b *darwinBackend) Run(t *Tray) error {
@@ -108,18 +153,24 @@ func (b *darwinBackend) Run(t *Tray) error {
 }
 
 // Attach adds the status item to the host's already-running NSApplication and
-// returns immediately: no LockOSThread (the host is already on its AppKit main
-// thread), no activation-policy change (the host stays a Regular, dock-visible
-// app), and no [NSApp run] (the host owns the loop). Call it from the host's
-// main/UI thread before or during its own run loop.
+// returns immediately: no LockOSThread (the host owns its AppKit main thread), no
+// activation-policy change (the host stays a Regular, dock-visible app), and no
+// [NSApp run] (the host owns the loop). It is safe to call from any goroutine —
+// the AppKit work is marshalled onto the main thread — but the host's main run
+// loop must be running (or about to run) so the marshalled setup can execute.
 func (b *darwinBackend) Attach(t *Tray) error {
 	b.prepare(t)
 	return nil
 }
 
-func (b *darwinBackend) Refresh(t *Tray) { b.apply(t) }
+func (b *darwinBackend) Refresh(t *Tray) {
+	b.pending = t
+	b.runOnMain(sel("goTrayRefresh:"))
+}
 
-// apply pushes the tray's icon, tooltip and menu into the live NSStatusItem.
+// apply pushes the tray's icon, tooltip and menu into the live NSStatusItem. It
+// runs on the main thread (called only from setupOnMain / the goTrayRefresh:
+// trampoline).
 func (b *darwinBackend) apply(t *Tray) {
 	if b.item == 0 {
 		return
@@ -131,13 +182,18 @@ func (b *darwinBackend) apply(t *Tray) {
 	if tip := t.Tooltip(); tip != "" {
 		button.Send(sel("setToolTip:"), nsString(tip))
 	}
-	b.items = b.items[:0]
+	// The click-dispatch table is the shared, unit-tested leafItems() order; the
+	// per-item tags assigned in buildMenu index straight into it.
+	b.items = leafItems(t.Menu())
+	b.tagSeq = 0
 	menu := b.buildMenu(t.Menu())
 	b.item.Send(sel("setMenu:"), menu)
 }
 
-// buildMenu converts a *Menu into an NSMenu, tagging each actionable item so the
-// target's -handle: can find it.
+// buildMenu converts a *Menu into an NSMenu, tagging each actionable item with
+// its leafItems index so the target's -handle: can find it. It walks the tree in
+// the same depth-first pre-order as leafItems, so tagSeq stays in lock-step with
+// b.items.
 func (b *darwinBackend) buildMenu(m *Menu) objc.ID {
 	menu := class("NSMenu").Send(sel("alloc")).Send(sel("init"))
 	menu.Send(sel("setAutoenablesItems:"), false)
@@ -151,8 +207,8 @@ func (b *darwinBackend) buildMenu(m *Menu) objc.ID {
 		if it.Submenu != nil {
 			mi.Send(sel("setSubmenu:"), b.buildMenu(it.Submenu))
 		} else {
-			tag := len(b.items)
-			b.items = append(b.items, it)
+			tag := b.tagSeq
+			b.tagSeq++
 			mi.Send(sel("setTag:"), tag)
 			mi.Send(sel("setTarget:"), b.target)
 			mi.Send(sel("setEnabled:"), !it.Disabled)
