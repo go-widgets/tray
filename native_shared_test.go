@@ -90,6 +90,24 @@ func TestLeafItems(t *testing.T) {
 	}
 }
 
+func TestDispatchLeaf(t *testing.T) {
+	a, b := 0, 0
+	items := []*MenuItem{Item("A", func() { a++ }), Item("B", func() { b++ })}
+	// in-range tags activate the mapped item
+	dispatchLeaf(items, 0)
+	dispatchLeaf(items, 1)
+	if a != 1 || b != 1 {
+		t.Fatalf("in-range dispatch = %d %d, want 1 1", a, b)
+	}
+	// out-of-range and negative tags are safe no-ops
+	dispatchLeaf(items, 2)
+	dispatchLeaf(items, -1)
+	dispatchLeaf(nil, 0)
+	if a != 1 || b != 1 {
+		t.Fatalf("out-of-range dispatch mutated state: %d %d", a, b)
+	}
+}
+
 func TestWalkItems(t *testing.T) {
 	if got := walkItems(nil); got != nil {
 		t.Errorf("nil menu walk = %v", got)

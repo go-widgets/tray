@@ -84,6 +84,17 @@ func leafItems(m *Menu) []*MenuItem {
 	return out
 }
 
+// dispatchLeaf activates items[tag], ignoring an out-of-range tag. A backend
+// that addresses menu items by a flat integer tag (eg. an NSMenuItem tag)
+// resolves a click through it: the tag indexes straight into the leafItems
+// slice the menu was built from, and a stale or malformed tag is a safe no-op
+// rather than an out-of-bounds panic.
+func dispatchLeaf(items []*MenuItem, tag int) {
+	if tag >= 0 && tag < len(items) {
+		items[tag].Activate()
+	}
+}
+
 // walkItems returns every item in m — separators and submenu parents included —
 // in depth-first, parent-before-children order. Its index in the returned slice
 // is a stable id a backend can address an item by (eg. a dbusmenu node id). A
