@@ -24,7 +24,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	"github.com/ebitengine/purego/objc"
+	objc "github.com/go-macos/objc"
 )
 
 const (
@@ -32,11 +32,11 @@ const (
 	nsApplicationActivationPolicyAccessory = 1
 )
 
-func sel(name string) objc.SEL { return objc.RegisterName(name) }
+func sel(name string) objc.SEL { return objc.Sel(name) }
 
 // class returns a class object as an ID so class messages (alloc, shared…) can
 // be Send directly.
-func class(name string) objc.ID { return objc.ID(objc.GetClass(name)) }
+func class(name string) objc.ID { return objc.ClassID(name) }
 
 // defaultBackend links the macOS NSStatusItem backend under -tags tray_native.
 func defaultBackend() Backend { return newNativeBackend() }
@@ -57,10 +57,7 @@ type darwinBackend struct {
 func newNativeBackend() Backend { return &darwinBackend{} }
 
 // nsString builds an NSString from a Go string.
-func nsString(s string) objc.ID {
-	b := append([]byte(s), 0)
-	return class("NSString").Send(sel("stringWithUTF8String:"), &b[0])
-}
+func nsString(s string) objc.ID { return objc.NSString(s) }
 
 // nsImageFromPNG builds an NSImage from PNG bytes (nil/empty → nil image).
 func nsImageFromPNG(png []byte) objc.ID {
@@ -88,8 +85,6 @@ func (b *darwinBackend) prepare(t *Tray) {
 	b.targetCls, _ = objc.RegisterClass(
 		"GoWidgetsTrayTarget",
 		objc.GetClass("NSObject"),
-		nil,
-		nil,
 		// MethodDef.Fn is the raw Go func; RegisterClass wraps it with NewIMP
 		// itself (wrapping it here would make it re-wrap an IMP and panic).
 		[]objc.MethodDef{
