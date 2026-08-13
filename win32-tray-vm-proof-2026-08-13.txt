@@ -1,0 +1,30 @@
+go-widgets/tray Windows backend on go-mswin/win32 — live proof on the Win11
+ARM64 QEMU VM (build 26200), 2026-08-13.
+
+examples/traydemo cross-compiled here (GOOS=windows GOARCH=arm64,
+-tags tray_native) and run in the VM's interactive session (schtasks /IT); the
+notification area was probed with UI Automation IN THAT SESSION (UIA is
+per-session — an ssh/session-0 probe sees an empty desktop).
+
+  Process traydemo alive (PID 4340) — the win32-backed backend initialised
+  without crashing: win32.NewMessageWindow (RegisterClassEx + CreateWindowEx),
+  Shell_NotifyIcon add, win32.Pump running.
+
+  UIA: CHEVRON="Show Hidden Icons" invoked; FOUND_TRAY="go-widgets tray demo"
+  ControlType.Button — the Shell_NotifyIcon registered with our tooltip.
+  -> win32-tray-icon-2026-08-13.png  (blue icon in the overflow flyout)
+
+  UIA: TRAY_FOUND rect=553,495,40,40; TRAY_INVOKED — clicking the icon drove the
+  window procedure (win32.Pump -> wndProc) into showMenu, and TrackPopupMenu
+  rendered the context menu:
+      Hello
+      (checked) Notifications
+      Recent  >
+      ----
+      Quit
+  exactly the traydemo definition (checkbox tick + submenu arrow + separator).
+  -> win32-tray-menu-2026-08-13.png
+
+The migrated surface (NewMessageWindow, Pump, DefWindowProc, PostQuitMessage,
+PostMessage) is fully exercised: the icon registers, the loop delivers the
+callback, and the menu pops and reads back correctly.

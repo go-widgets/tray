@@ -3,57 +3,52 @@
 package tray
 
 // Windows system-tray backend: a Shell_NotifyIcon notification-area icon whose
-// context menu is a TrackPopupMenu popup. CGO_ENABLED=0 throughout — every
-// Win32 entry point is reached through golang.org/x/sys/windows lazy procs.
+// context menu is a TrackPopupMenu popup. CGO_ENABLED=0 throughout — the shared
+// Win32 surface (the message-only owner window, the class registration, the
+// GetMessage/DispatchMessage pump, DefWindowProc/PostQuitMessage/PostMessage,
+// LoadCursor/GetModuleHandle) comes from github.com/go-mswin/win32; only the
+// tray-specific procedures (Shell_NotifyIconW, the popup-menu and icon calls)
+// are bound here, off win32's shared lazy DLL handles rather than re-declaring
+// user32/gdi32/kernel32.
 //
-// This file is compile-verified only. A notification-area icon needs a live
-// Windows desktop session to confirm at runtime, which headless CI cannot do.
+// This file is compile-verified in headless CI; the live notification icon and
+// its menu are proven on the Win11 ARM64 QEMU VM.
 //
-// Threading: a message-only window (HWND_MESSAGE) owns the icon; its window
-// procedure and the GetMessage/DispatchMessage pump both run on the goroutine
-// that called Run, which is pinned with runtime.LockOSThread. The tray's
-// callback message reports mouse events; a right/context click builds the popup
-// menu on demand, and the chosen command id maps back to a *MenuItem.
+// Threading: a message-only window (win32.MessageWindow, HWND_MESSAGE) owns the
+// icon; its window procedure and win32.Pump both run on the goroutine that
+// called Run, pinned with runtime.LockOSThread. The tray's callback message
+// reports mouse events; a right/context click builds the popup menu on demand,
+// and the chosen command id maps back to a *MenuItem.
 
 import (
 	"runtime"
 	"unsafe"
 
+	"github.com/go-mswin/win32"
 	"golang.org/x/sys/windows"
 )
 
+// Tray-specific procedures, bound off win32's shared lazy DLL handles. The
+// window/class/pump procedures the tray used to declare here now live in
+// go-mswin/win32.
 var (
-	user32   = windows.NewLazySystemDLL("user32.dll")
-	shell32  = windows.NewLazySystemDLL("shell32.dll")
-	gdi32    = windows.NewLazySystemDLL("gdi32.dll")
-	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
+	procSetForegroundWindow = win32.User32.NewProc("SetForegroundWindow")
+	procGetCursorPos        = win32.User32.NewProc("GetCursorPos")
+	procCreatePopupMenu     = win32.User32.NewProc("CreatePopupMenu")
+	procAppendMenu          = win32.User32.NewProc("AppendMenuW")
+	procTrackPopupMenu      = win32.User32.NewProc("TrackPopupMenu")
+	procDestroyMenu         = win32.User32.NewProc("DestroyMenu")
+	procDestroyIcon         = win32.User32.NewProc("DestroyIcon")
+	procCreateIconIndirect  = win32.User32.NewProc("CreateIconIndirect")
 
-	procRegisterClassEx     = user32.NewProc("RegisterClassExW")
-	procCreateWindowEx      = user32.NewProc("CreateWindowExW")
-	procDefWindowProc       = user32.NewProc("DefWindowProcW")
-	procGetMessage          = user32.NewProc("GetMessageW")
-	procTranslateMessage    = user32.NewProc("TranslateMessage")
-	procDispatchMessage     = user32.NewProc("DispatchMessageW")
-	procPostQuitMessage     = user32.NewProc("PostQuitMessage")
-	procPostMessage         = user32.NewProc("PostMessageW")
-	procLoadCursor          = user32.NewProc("LoadCursorW")
-	procSetForegroundWindow = user32.NewProc("SetForegroundWindow")
-	procGetCursorPos        = user32.NewProc("GetCursorPos")
-	procCreatePopupMenu     = user32.NewProc("CreatePopupMenu")
-	procAppendMenu          = user32.NewProc("AppendMenuW")
-	procTrackPopupMenu      = user32.NewProc("TrackPopupMenu")
-	procDestroyMenu         = user32.NewProc("DestroyMenu")
-	procDestroyIcon         = user32.NewProc("DestroyIcon")
-	procCreateIconIndirect  = user32.NewProc("CreateIconIndirect")
+	procShellNotifyIcon = win32.Shell32.NewProc("Shell_NotifyIconW")
 
-	procShellNotifyIcon = shell32.NewProc("Shell_NotifyIconW")
-
-	procCreateBitmap = gdi32.NewProc("CreateBitmap")
-	procDeleteObject = gdi32.NewProc("DeleteObject")
-
-	procGetModuleHandle = kernel32.NewProc("GetModuleHandleW")
+	procCreateBitmap = win32.Gdi32.NewProc("CreateBitmap")
+	procDeleteObject = win32.Gdi32.NewProc("DeleteObject")
 )
 
+// Tray-specific message and menu constants (the shared WM_*/IDC_* live in
+// go-mswin/win32).
 const (
 	wmDestroy      = 0x0002
 	wmClose        = 0x0010
@@ -81,29 +76,9 @@ const (
 
 	tpmReturnCmd   = 0x100
 	tpmRightButton = 0x2
-
-	idcArrow = 32512
 )
 
-// hwndMessage is HWND_MESSAGE ((HWND)-3): a parent that makes CreateWindowEx
-// produce a message-only window (no taskbar/z-order presence).
-const hwndMessage = ^uintptr(2)
-
-type wndClassEx struct {
-	cbSize        uint32
-	style         uint32
-	lpfnWndProc   uintptr
-	cbClsExtra    int32
-	cbWndExtra    int32
-	hInstance     windows.Handle
-	hIcon         windows.Handle
-	hCursor       windows.Handle
-	hbrBackground windows.Handle
-	lpszMenuName  *uint16
-	lpszClassName *uint16
-	hIconSm       windows.Handle
-}
-
+// notifyIconData mirrors Win32 NOTIFYICONDATAW (tray-specific).
 type notifyIconData struct {
 	cbSize           uint32
 	hWnd             windows.Handle
@@ -122,36 +97,15 @@ type notifyIconData struct {
 	hBalloonIcon     windows.Handle
 }
 
-type iconInfo struct {
-	fIcon    int32
-	xHotspot uint32
-	yHotspot uint32
-	hbmMask  windows.Handle
-	hbmColor windows.Handle
-}
-
-type point struct{ x, y int32 }
-
-type msg struct {
-	hwnd    windows.Handle
-	message uint32
-	wParam  uintptr
-	lParam  uintptr
-	time    uint32
-	pt      point
-}
-
 // windowsBackend owns the message-only window and the live notification icon.
 type windowsBackend struct {
-	tray      *Tray
-	hwnd      windows.Handle
-	hInst     windows.Handle
-	hIcon     windows.Handle
-	nid       notifyIconData
-	leaves    []*MenuItem // command id (1-based) -> item, from leafItems
-	nextID    int
-	className *uint16
-	added     bool
+	tray   *Tray
+	mw     *win32.MessageWindow
+	hIcon  windows.Handle
+	nid    notifyIconData
+	leaves []*MenuItem // command id (1-based) -> item, from leafItems
+	nextID int
+	added  bool
 }
 
 // defaultBackend links the Windows Shell_NotifyIcon backend under -tags tray_native.
@@ -161,52 +115,19 @@ func (b *windowsBackend) Run(t *Tray) error {
 	runtime.LockOSThread()
 	b.tray = t
 
-	h, _, _ := procGetModuleHandle.Call(0)
-	b.hInst = windows.Handle(h)
-
-	var err error
-	if b.className, err = windows.UTF16PtrFromString("GoWidgetsTrayWindow"); err != nil {
+	// A hidden HWND_MESSAGE window (class registration, cursor, module handle and
+	// creation all handled by the shared helper) owns the notification icon.
+	mw, err := win32.NewMessageWindow("GoWidgetsTrayWindow", win32.NewCallback(b.wndProc))
+	if err != nil {
 		return err
 	}
-	cursor, _, _ := procLoadCursor.Call(0, idcArrow)
-
-	wc := wndClassEx{
-		cbSize:        uint32(unsafe.Sizeof(wndClassEx{})),
-		lpfnWndProc:   windows.NewCallback(b.wndProc),
-		hInstance:     b.hInst,
-		hCursor:       windows.Handle(cursor),
-		lpszClassName: b.className,
-	}
-	if atom, _, e := procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc))); atom == 0 {
-		return e
-	}
-
-	hwnd, _, e := procCreateWindowEx.Call(
-		0,
-		uintptr(unsafe.Pointer(b.className)),
-		uintptr(unsafe.Pointer(b.className)),
-		0, 0, 0, 0, 0,
-		hwndMessage,
-		0,
-		uintptr(b.hInst),
-		0,
-	)
-	if hwnd == 0 {
-		return e
-	}
-	b.hwnd = windows.Handle(hwnd)
+	b.mw = mw
 
 	b.apply(t)
 	t.ready()
 
-	var m msg
-	for {
-		r, _, _ := procGetMessage.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
-		if int32(r) <= 0 { // 0 = WM_QUIT, -1 = error
-			break
-		}
-		procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
-		procDispatchMessage.Call(uintptr(unsafe.Pointer(&m)))
+	if err := win32.Pump(); err != nil {
+		return err
 	}
 
 	nid := b.nid
@@ -220,13 +141,13 @@ func (b *windowsBackend) Run(t *Tray) error {
 func (b *windowsBackend) Refresh(t *Tray) { b.apply(t) }
 
 func (b *windowsBackend) Quit() {
-	if b.hwnd != 0 {
-		procPostMessage.Call(uintptr(b.hwnd), wmClose, 0, 0)
+	if b.mw != nil && b.mw.Hwnd != 0 {
+		win32.PostMessage(b.mw.Hwnd, wmClose, 0, 0)
 	}
 }
 
 // wndProc is the message-only window's procedure. Its signature is all-uintptr
-// so windows.NewCallback accepts it.
+// so win32.NewCallback (windows.NewCallback) accepts it.
 func (b *windowsBackend) wndProc(hwnd, msgID, wParam, lParam uintptr) uintptr {
 	switch uint32(msgID) {
 	case wmTrayCallback:
@@ -242,11 +163,10 @@ func (b *windowsBackend) wndProc(hwnd, msgID, wParam, lParam uintptr) uintptr {
 		b.dispatch(int(wParam & 0xffff))
 		return 0
 	case wmDestroy:
-		procPostQuitMessage.Call(0)
+		win32.PostQuitMessage(0)
 		return 0
 	}
-	r, _, _ := procDefWindowProc.Call(hwnd, msgID, wParam, lParam)
-	return r
+	return uintptr(win32.DefWindowProc(win32.HWND(hwnd), uint32(msgID), win32.WPARAM(wParam), win32.LPARAM(lParam)))
 }
 
 // dispatch activates the leaf mapped to a 1-based command id.
@@ -265,20 +185,20 @@ func (b *windowsBackend) showMenu() {
 	hmenu := b.buildMenu(menu)
 	defer procDestroyMenu.Call(hmenu)
 
-	var pt point
+	var pt win32.Point
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 	// SetForegroundWindow + a trailing WM_NULL is the documented workaround that
 	// lets the popup dismiss correctly for a hidden owner window.
-	procSetForegroundWindow.Call(uintptr(b.hwnd))
+	procSetForegroundWindow.Call(uintptr(b.mw.Hwnd))
 	cmd, _, _ := procTrackPopupMenu.Call(
 		hmenu,
 		tpmReturnCmd|tpmRightButton,
-		uintptr(pt.x), uintptr(pt.y),
+		uintptr(pt.X), uintptr(pt.Y),
 		0,
-		uintptr(b.hwnd),
+		uintptr(b.mw.Hwnd),
 		0,
 	)
-	procPostMessage.Call(uintptr(b.hwnd), wmNull, 0, 0)
+	win32.PostMessage(b.mw.Hwnd, wmNull, 0, 0)
 	if cmd != 0 {
 		b.dispatch(int(cmd))
 	}
@@ -324,7 +244,7 @@ func (b *windowsBackend) makeIcon(png []byte) windows.Handle {
 	rowBytes := ((w + 15) / 16) * 2 // WORD-aligned scanlines
 	mask := make([]byte, rowBytes*h)
 	hbmMask, _, _ := procCreateBitmap.Call(uintptr(w), uintptr(h), 1, 1, uintptr(unsafe.Pointer(&mask[0])))
-	ii := iconInfo{fIcon: 1, hbmMask: windows.Handle(hbmMask), hbmColor: windows.Handle(hbmColor)}
+	ii := win32.IconInfo{FIcon: 1, HbmMask: win32.HBITMAP(hbmMask), HbmColor: win32.HBITMAP(hbmColor)}
 	hicon, _, _ := procCreateIconIndirect.Call(uintptr(unsafe.Pointer(&ii)))
 	procDeleteObject.Call(hbmColor)
 	procDeleteObject.Call(hbmMask)
@@ -334,7 +254,7 @@ func (b *windowsBackend) makeIcon(png []byte) windows.Handle {
 // apply pushes the tray's icon, tooltip and (leaf table for) menu into the live
 // notification icon, adding it on first call and modifying it afterwards.
 func (b *windowsBackend) apply(t *Tray) {
-	if b.hwnd == 0 {
+	if b.mw == nil || b.mw.Hwnd == 0 {
 		return
 	}
 	b.leaves = leafItems(t.Menu())
@@ -347,7 +267,7 @@ func (b *windowsBackend) apply(t *Tray) {
 
 	b.nid = notifyIconData{
 		cbSize:           uint32(unsafe.Sizeof(notifyIconData{})),
-		hWnd:             b.hwnd,
+		hWnd:             windows.Handle(b.mw.Hwnd),
 		uID:              1,
 		uFlags:           nifMessage | nifIcon | nifTip,
 		uCallbackMessage: wmTrayCallback,
