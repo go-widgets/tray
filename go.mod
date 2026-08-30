@@ -11,5 +11,5 @@ require github.com/go-mswin/win32 v0.4.0
 
 require (
 	github.com/ebitengine/purego v0.10.2 // indirect
-	github.com/go-macos/objc v0.5.0
+	github.com/go-macos/objc v0.7.0
 )

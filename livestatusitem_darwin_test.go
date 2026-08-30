@@ -19,11 +19,16 @@ package tray
 // that lives for a second is the whole exposure.
 
 import (
+	"bytes"
+	"image"
+	"image/color"
+	pngenc "image/png"
 	"os"
 	"runtime"
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	objc "github.com/go-macos/objc"
 )
@@ -309,4 +314,60 @@ func TestLiveTwoBackendsEachGetTheirOwnTargetClass(t *testing.T) {
 	if a.target == 0 || c.target == 0 {
 		t.Errorf("target instances %#x and %#x: one of them is nil", uintptr(a.target), uintptr(c.target))
 	}
+}
+
+// TestLiveImageIsSizedForTheMenuBar reads the NSImage's size back out of AppKit.
+//
+// The defect it guards is quiet in the same way as the nil application: the icon
+// is built, it is placed, everything answers, and it is simply TALLER than every
+// neighbouring menu extra — because an NSImage built from data reports its
+// PIXEL count as points, and the icon this ships is 36 pixels for a 22-point
+// bar. No API says no. It was reported by someone looking at their menu bar.
+func TestLiveImageIsSizedForTheMenuBar(t *testing.T) {
+	requireWindowServer(t)
+	runtime.LockOSThread()
+	if objc.App() == 0 {
+		t.Skip("no shared application in this session")
+	}
+
+	// A 36x36 PNG, which is what the fleet's generator emits: two pixels of a
+	// black glyph is enough, the size is the whole subject.
+	png := tallPNG(t, 36, 36)
+
+	img := nsImageFromPNG(png)
+	if img == 0 {
+		t.Fatal("nsImageFromPNG returned a nil image for a valid PNG")
+	}
+	got := objc.Send[objc.NSSize](img, objc.Sel("size"))
+	if got.Height != menuBarPoints {
+		t.Errorf("image is %.1f points tall, want %d — a 22-point bar cannot hold it",
+			got.Height, menuBarPoints)
+	}
+	if got.Width != menuBarPoints {
+		t.Errorf("a square image came back %.1f x %.1f: the aspect ratio was not kept",
+			got.Width, got.Height)
+	}
+
+	// The negative control: without this the test would pass on any image whose
+	// pixels happened to be 18, and prove nothing about the sizing.
+	raw := objc.ClassID("NSImage").Send(objc.Sel("alloc")).
+		Send(objc.Sel("initWithData:"), objc.ClassID("NSData").
+			Send(objc.Sel("dataWithBytes:length:"), unsafe.Pointer(&png[0]), uintptr(len(png))))
+	if before := objc.Send[objc.NSSize](raw, objc.Sel("size")); before.Height != 36 {
+		t.Fatalf("control: an unsized NSImage reported %.1f points, want 36 — "+
+			"if AppKit no longer does this, the fix above is guarding nothing", before.Height)
+	}
+}
+
+// tallPNG encodes a w x h PNG with one opaque pixel, so the bytes are a real
+// image without the test carrying a fixture.
+func tallPNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	m := image.NewNRGBA(image.Rect(0, 0, w, h))
+	m.Set(w/2, h/2, color.NRGBA{A: 255})
+	var b bytes.Buffer
+	if err := pngenc.Encode(&b, m); err != nil {
+		t.Fatalf("encode the probe image: %v", err)
+	}
+	return b.Bytes()
 }
