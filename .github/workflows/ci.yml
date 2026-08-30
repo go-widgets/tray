@@ -8,6 +8,25 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with: { go-version: stable }
+      - name: nothing big is tracked
+        shell: bash
+        run: |
+          # A repository carries what it is given for ever. `go build` on a main
+          # package writes an executable into the working tree, named after the
+          # package, and one sweeping add later it is in the history of every
+          # clone. That happened here: traydemo, 3.5 MB of a 5 MB repository.
+          #
+          # A megabyte is the line. Nothing this repository legitimately tracks
+          # comes near it: the largest source file is a few tens of kilobytes.
+          big=$(git ls-files -z | xargs -0 -I{} find {} -type f -size +1024k -print)
+          if [ -n "$big" ]; then
+            echo "$big" | while read -r f; do
+              echo "::error file=$f::$f is $(du -h "$f" | cut -f1) and is tracked; \
+          a repository keeps what it is given for ever"
+            done
+            exit 1
+          fi
+          echo "nothing tracked is over a megabyte"
       - run: go vet ./...
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: test + 100% coverage gate on the portable code
