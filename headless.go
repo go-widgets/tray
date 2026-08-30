@@ -50,6 +50,18 @@ func (h *Headless) Quit() {
 	}
 }
 
+// Snapshot returns the state this backend last recorded, under the lock.
+//
+// Reading the fields directly is safe only while nothing can refresh
+// concurrently. That used to be every caller; an icon bound to an observable
+// state refreshes from the animator's own goroutine, so a reader that wants to
+// watch it happen needs this.
+func (h *Headless) Snapshot() (icon []byte, tip string, menu *Menu) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.LastIcon, h.LastTip, h.LastMenu
+}
+
 func (h *Headless) snapshot(t *Tray) {
 	h.LastIcon, h.LastTip, h.LastMenu = t.Icon(), t.Tooltip(), t.Menu()
 }
