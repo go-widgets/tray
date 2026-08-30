@@ -7,7 +7,7 @@ require (
 	golang.org/x/sys v0.47.0
 )
 
-require github.com/go-mswin/win32 v0.1.0
+require github.com/go-mswin/win32 v0.4.0
 
 require (
 	github.com/ebitengine/purego v0.10.2 // indirect
