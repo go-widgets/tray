@@ -2,6 +2,7 @@ package tray
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -126,5 +127,60 @@ func TestWalkItems(t *testing.T) {
 	}
 	if got[3].Label != "child" {
 		t.Errorf("walk[3] = %q, want child", got[3].Label)
+	}
+}
+
+// TestCheckNativeNamesTheObjectThatIsNil is the regression test for the defect
+// that made this guard necessary: a tray that started, said it was in the menu
+// bar and exited half a second later, because +[NSApplication sharedApplication]
+// had returned nil in a process where nothing had loaded AppKit and every
+// message after it returned zero in silence.
+//
+// Each case leaves exactly one object nil, and the expectation is the error that
+// NAMES that object. The order of the cases is itself the assertion the last one
+// makes: with several objects nil at once the first cause must be reported, not
+// the last symptom.
+func TestCheckNativeNamesTheObjectThatIsNil(t *testing.T) {
+	const live = 0x1 // any non-nil pointer value; only zero-ness is read
+
+	for _, c := range []struct {
+		name                         string
+		app, statusBar, item, target uintptr
+		want                         error
+	}{
+		{"all live", live, live, live, live, nil},
+		{"no application", 0, live, live, live, ErrNoApplication},
+		{"no status bar", live, 0, live, live, ErrNoStatusBar},
+		{"no status item", live, live, 0, live, ErrNoStatusItem},
+		{"no target class", live, live, live, 0, ErrNoTargetClass},
+		// The whole cascade, which is what the real failure looked like: AppKit
+		// was never loaded, so nothing downstream of it existed either. The
+		// application must be reported, because the other three nils are its
+		// consequence and naming them sends the reader to the wrong place.
+		{"nothing at all", 0, 0, 0, 0, ErrNoApplication},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := checkNative(c.app, c.statusBar, c.item, c.target)
+			if !errors.Is(got, c.want) {
+				t.Fatalf("checkNative(%#x,%#x,%#x,%#x) = %v, want %v",
+					c.app, c.statusBar, c.item, c.target, got, c.want)
+			}
+		})
+	}
+}
+
+// TestNativeErrorsAreDistinct guards the thing the table above cannot: four
+// errors that all said the same thing would satisfy every case there while
+// telling an operator nothing.
+func TestNativeErrorsAreDistinct(t *testing.T) {
+	seen := map[string]bool{}
+	for _, err := range []error{ErrNoApplication, ErrNoStatusBar, ErrNoStatusItem, ErrNoTargetClass} {
+		if err.Error() == "" {
+			t.Error("an error with an empty message")
+		}
+		if seen[err.Error()] {
+			t.Errorf("two errors share the message %q", err)
+		}
+		seen[err.Error()] = true
 	}
 }
