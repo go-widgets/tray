@@ -105,6 +105,10 @@ type darwinBackend struct {
 	// hop. runOnMain waits for the selector to finish, so it is written and
 	// read on either side of a rendezvous rather than concurrently.
 	setupErr error
+	// lastMenuSig is the signature of the menu currently on screen, so an
+	// icon-only refresh does not rebuild it. Written and read on the main
+	// thread only, like the rest of the AppKit state above.
+	lastMenuSig string
 }
 
 func newNativeBackend() Backend { return &darwinBackend{} }
@@ -183,7 +187,13 @@ func (b *darwinBackend) prepare(t *Tray) error {
 			{
 				Cmd: objc.Sel("goTrayRefresh:"),
 				Fn: func(self objc.ID, _cmd objc.SEL, _ objc.ID) {
-					b.apply(b.pending)
+					// A pool of its own: this runs on the MAIN thread, so a
+					// caller's pool does not cover it, and the autoreleased
+					// NSData and NSString every refresh makes would sit until
+					// the run loop happened to drain. An animated icon
+					// refreshes several times a second, and the drain is not
+					// on that schedule.
+					objc.AutoreleasePool(func() { b.apply(b.pending) })
 				},
 			},
 		},
@@ -294,11 +304,25 @@ func (b *darwinBackend) apply(t *Tray) {
 		button.Send(objc.Sel("setToolTip:"), objc.NSString(tip))
 	}
 	// The click-dispatch table is the shared, unit-tested leafItems() order; the
-	// per-item tags assigned in buildMenu index straight into it.
+	// per-item tags assigned in buildMenu index straight into it. It is rebuilt
+	// every time because it is cheap and it carries the CURRENT handlers, which
+	// the signature deliberately ignores.
 	b.items = leafItems(t.Menu())
-	b.tagSeq = 0
-	menu := b.buildMenu(t.Menu())
-	b.item.Send(objc.Sel("setMenu:"), menu)
+
+	// Rebuild the platform menu only when what it draws has changed.
+	//
+	// This used to run on every refresh. That was affordable while the icon
+	// changed twice a minute and stops being so the moment one animates: an
+	// NSMenu and an NSMenuItem per row, several times a second, none of them
+	// released — and worse, the menu replaced under a user who has it open.
+	if sig := menuSignature(t.Menu()); sig != b.lastMenuSig {
+		b.tagSeq = 0
+		menu := b.buildMenu(t.Menu())
+		b.item.Send(objc.Sel("setMenu:"), menu)
+		// setMenu: retains; the reference alloc gave us is ours to drop.
+		menu.Send(objc.Sel("release"))
+		b.lastMenuSig = sig
+	}
 }
 
 // buildMenu converts a *Menu into an NSMenu, tagging each actionable item with
@@ -316,7 +340,9 @@ func (b *darwinBackend) buildMenu(m *Menu) objc.ID {
 		mi := objc.ClassID("NSMenuItem").Send(objc.Sel("alloc")).Send(objc.Sel("initWithTitle:action:keyEquivalent:"),
 			objc.NSString(it.Label), objc.Sel("handle:"), objc.NSString(""))
 		if it.Submenu != nil {
-			mi.Send(objc.Sel("setSubmenu:"), b.buildMenu(it.Submenu))
+			sub := b.buildMenu(it.Submenu)
+			mi.Send(objc.Sel("setSubmenu:"), sub)
+			sub.Send(objc.Sel("release")) // setSubmenu: retains
 		} else {
 			tag := b.tagSeq
 			b.tagSeq++
@@ -328,6 +354,7 @@ func (b *darwinBackend) buildMenu(m *Menu) objc.ID {
 			}
 		}
 		menu.Send(objc.Sel("addItem:"), mi)
+		mi.Send(objc.Sel("release")) // addItem: retains
 	}
 	return menu
 }
