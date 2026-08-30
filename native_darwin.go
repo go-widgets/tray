@@ -109,13 +109,37 @@ type darwinBackend struct {
 
 func newNativeBackend() Backend { return &darwinBackend{} }
 
-// nsImageFromPNG builds an NSImage from PNG bytes (nil/empty → nil image).
+// menuBarPoints is how tall a menu-bar icon is drawn, in points. macOS draws
+// its own menu extras at 18 in a 22-point bar; the remaining 4 points are the
+// margin that makes a row of icons look like a row rather than a fence.
+const menuBarPoints = 18
+
+// nsImageFromPNG builds an NSImage from PNG bytes (nil/empty → nil image),
+// sized for the menu bar.
 func nsImageFromPNG(png []byte) objc.ID {
 	if len(png) == 0 {
 		return 0
 	}
 	data := objc.ClassID("NSData").Send(objc.Sel("dataWithBytes:length:"), unsafe.Pointer(&png[0]), uintptr(len(png)))
 	img := objc.ClassID("NSImage").Send(objc.Sel("alloc")).Send(objc.Sel("initWithData:"), data)
+	if img == 0 {
+		return 0
+	}
+	// An NSImage built from data takes its size from the bitmap's PIXEL count:
+	// a 36-pixel icon reports 36 points, and stands taller than the 22-point
+	// bar it is asked to sit in. Nobody sees a warning; the icon is simply
+	// bigger than its neighbours, which is how this was reported.
+	//
+	// Saying the size explicitly is what turns the extra pixels into
+	// resolution instead of dimensions: the bitmap stays as detailed as it was
+	// and AppKit draws it at the height a menu bar expects. The width follows
+	// the aspect ratio, so a caller shipping a wordmark is not squashed.
+	if sz := objc.Send[objc.NSSize](img, objc.Sel("size")); sz.Height > 0 {
+		img.Send(objc.Sel("setSize:"), objc.NSSize{
+			Width:  sz.Width * menuBarPoints / sz.Height,
+			Height: menuBarPoints,
+		})
+	}
 	// a template image adapts to light/dark menu bars
 	img.Send(objc.Sel("setTemplate:"), true)
 	return img
