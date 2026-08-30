@@ -10,13 +10,32 @@ jobs:
         with: { go-version: stable }
       - run: go vet ./...
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
-      - name: test + 100% coverage gate
+      - name: test + 100% coverage gate on the portable code
         run: |
-          pkgs=$(go list ./... | grep -v /examples/)
-          go test $pkgs -covermode=atomic -coverprofile=cov.out
-          total=$(go tool cover -func=cov.out | awk '/^total:/{print $3}')
-          echo "coverage: $total"
-          [ "$total" = "100.0%" ] || { go tool cover -func=cov.out | awk '$3!="100.0%"'; exit 1; }
+          # The gate selects by SHAPE rather than by a build tag, which is what
+          # the rest of this fleet does. Everything that is not a platform file
+          # -- Go's own _darwin/_linux/_windows/_android/_js/_other suffixes --
+          # is held at 100%, so a new portable file is gated the day it is
+          # written instead of the day somebody remembers to add it.
+          #
+          # It used to be a build tag, and the tag was on the WRONG THING: the
+          # native backends were opt-in, so `tray.New(...).Run()` in an ordinary
+          # program returned ErrNoBackend and put no icon anywhere. A library
+          # whose default is "does nothing, quietly" to protect its own coverage
+          # figure is a library that has put its CI ahead of its callers.
+          go list ./... | grep -v /examples/ |
+            xargs go test -covermode=atomic -coverprofile=cov.out
+          go tool cover -func=cov.out \
+            | grep -vE '_(darwin|linux|android|windows|js|other)\.go:' \
+            | grep -v '^total:' > portable.txt || true
+          cat portable.txt
+          if [ ! -s portable.txt ]; then
+            echo "::error::no portable files were measured at all; the filter is wrong"; exit 1
+          fi
+          if grep -v '100\.0%' portable.txt; then
+            echo "::error::the portable code is below 100% (lines above)"; exit 1
+          fi
+          echo "portable code: 100%"
   # The native backend was BUILT here for a long time and never RUN. That is
   # how `go test -tags tray_native ./...` came to die on SIGTRAP over a suite
   # CI reported as green: two assertions written for the untagged build entered

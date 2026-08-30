@@ -1,4 +1,4 @@
-//go:build tray_native && darwin
+//go:build darwin
 
 package tray
 
@@ -87,7 +87,7 @@ func ensureAppKit() error {
 // and keeps each backend's own Go closures attached to its own class.
 var targetClassSeq atomic.Uint64
 
-// defaultBackend links the macOS NSStatusItem backend under -tags tray_native.
+// defaultBackend links the macOS NSStatusItem backend.
 func defaultBackend() Backend { return newNativeBackend() }
 
 // darwinBackend holds the live Objective-C objects and the flat item table the

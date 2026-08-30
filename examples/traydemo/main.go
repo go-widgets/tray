@@ -2,7 +2,7 @@
 //
 // On macOS, verify the native backend live:
 //
-//	go run -tags tray_native ./examples/traydemo
+//	go run ./examples/traydemo
 //
 // A menu-bar icon appears; clicking items prints to the terminal. Without the
 // tag (or on a platform whose native backend isn't built yet) it prints
@@ -36,7 +36,7 @@ func main() {
 	t.OnReady(func() { fmt.Println("tray ready") })
 
 	if err := t.Run(); err != nil {
-		fmt.Println("tray:", err, "(build with -tags tray_native on a supported OS)")
+		fmt.Println("tray:", err, "(this platform has no native backend)")
 	}
 }
 
