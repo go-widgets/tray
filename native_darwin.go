@@ -3,9 +3,27 @@
 package tray
 
 // macOS system-tray backend: an NSStatusItem in the menu bar, driven through the
-// Objective-C runtime via ebitengine/purego (CGO_ENABLED=0). This file is
-// compile-verified in CI but its runtime behaviour must be confirmed on a real
-// macOS session — a menu-bar item cannot be verified headlessly.
+// Objective-C runtime via github.com/go-macos/objc — the fleet's shared purego
+// bridge (CGO_ENABLED=0). Nothing here re-implements what that package already
+// provides: no local class/selector helpers, no hand-written
+// +[NSApplication sharedApplication], no hand-written [NSApp run].
+//
+// WHY THAT MATTERS, measured. This file used to look up NSApplication itself
+// with its own one-line class() helper, and no line in this package ever loaded
+// AppKit. The NSApplication class therefore did not exist in the process, the
+// lookup returned the nil class, +sharedApplication returned nil, and every
+// message after it returned zero — in SILENCE, because Objective-C does not
+// complain about a message to nil. [NSApp run] returned at once. The observable
+// was a menu-bar program that printed "godl is in the menu bar", exited 0 in
+// 0.549s, showed nothing and logged nothing. Traces from that build read
+// "isMainThread=1 app=0 item=0": the thread was right, the object was nil.
+//
+// Two things came out of it and both are load-bearing here. AppKit is loaded
+// where NSApplication is NAMED (ensureAppKit, below) rather than left to the
+// caller to remember. And every object AppKit hands back is CHECKED before it
+// is used — see checkNative in native_shared.go — so that a nil arrives as an
+// error that says which object was nil, not as a program that quietly does
+// nothing.
 //
 // Threading: AppKit is main-thread-only. Every NSStatusBar/NSStatusItem/NSMenu
 // call therefore runs on the process main thread, marshalled there through
@@ -21,7 +39,11 @@ package tray
 // the shared, unit-tested leafItems() table.
 
 import (
+	"fmt"
 	"runtime"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	objc "github.com/go-macos/objc"
@@ -32,11 +54,38 @@ const (
 	nsApplicationActivationPolicyAccessory = 1
 )
 
-func sel(name string) objc.SEL { return objc.Sel(name) }
+// appKitOnce loads AppKit (and Foundation) exactly once per process.
+var (
+	appKitOnce sync.Once
+	appKitErr  error
+)
 
-// class returns a class object as an ID so class messages (alloc, shared…) can
-// be Send directly.
-func class(name string) objc.ID { return objc.ClassID(name) }
+// ensureAppKit dlopens the frameworks whose classes this file names, once.
+//
+// It is called before anything looks NSApplication up, because a class that has
+// not been loaded is not "missing" in any way the runtime will mention: the
+// lookup yields the nil class and every message to it yields zero. objc.App()
+// carries the same guarantee from go-macos/objc v0.6.0 onwards; loading here
+// too costs one refcounted dlopen of an already-resident framework and makes
+// this package correct against the version it currently requires, which is the
+// version the defect above was measured on.
+func ensureAppKit() error {
+	appKitOnce.Do(func() {
+		if err := objc.Load(objc.AppKit, objc.Foundation); err != nil {
+			appKitErr = fmt.Errorf("tray: loading AppKit: %w", err)
+		}
+	})
+	return appKitErr
+}
+
+// targetClassSeq numbers the runtime target classes.
+//
+// objc_allocateClassPair REFUSES a duplicate class name and returns nil, so a
+// process that builds a second tray would otherwise get a nil class, a nil
+// target instance, and a menu whose every row has a nil target: it draws
+// perfectly and answers no click. A per-backend name sidesteps that entirely
+// and keeps each backend's own Go closures attached to its own class.
+var targetClassSeq atomic.Uint64
 
 // defaultBackend links the macOS NSStatusItem backend under -tags tray_native.
 func defaultBackend() Backend { return newNativeBackend() }
@@ -52,67 +101,89 @@ type darwinBackend struct {
 	targetCls objc.Class
 	target    objc.ID
 	pending   *Tray // tray the main-thread setup/refresh selectors act on
+	// setupErr carries the outcome of setupOnMain back across the main-thread
+	// hop. runOnMain waits for the selector to finish, so it is written and
+	// read on either side of a rendezvous rather than concurrently.
+	setupErr error
 }
 
 func newNativeBackend() Backend { return &darwinBackend{} }
-
-// nsString builds an NSString from a Go string.
-func nsString(s string) objc.ID { return objc.NSString(s) }
 
 // nsImageFromPNG builds an NSImage from PNG bytes (nil/empty → nil image).
 func nsImageFromPNG(png []byte) objc.ID {
 	if len(png) == 0 {
 		return 0
 	}
-	data := class("NSData").Send(sel("dataWithBytes:length:"), unsafe.Pointer(&png[0]), uintptr(len(png)))
-	img := class("NSImage").Send(sel("alloc")).Send(sel("initWithData:"), data)
+	data := objc.ClassID("NSData").Send(objc.Sel("dataWithBytes:length:"), unsafe.Pointer(&png[0]), uintptr(len(png)))
+	img := objc.ClassID("NSImage").Send(objc.Sel("alloc")).Send(objc.Sel("initWithData:"), data)
 	// a template image adapts to light/dark menu bars
-	img.Send(sel("setTemplate:"), true)
+	img.Send(objc.Sel("setTemplate:"), true)
 	return img
 }
 
-// prepare builds the click-dispatch target class and its instance (neither
-// touches AppKit, so this is safe on whatever goroutine/thread called Run or
-// Attach), then marshals the actual AppKit setup onto the main thread. Shared by
-// Run and Attach; it does NOT touch the activation policy or start a run loop, so
-// a host that owns those is unaffected.
-func (b *darwinBackend) prepare(t *Tray) {
+// prepare loads AppKit, builds the click-dispatch target class and its instance
+// (neither touches AppKit's main-thread-only surface, so this is safe on
+// whatever goroutine/thread called Run or Attach), then marshals the actual
+// AppKit setup onto the main thread and reports what it found there. Shared by
+// Run and Attach; it does NOT touch the activation policy or start a run loop,
+// so a host that owns those is unaffected.
+func (b *darwinBackend) prepare(t *Tray) error {
 	b.pending = t
+
+	if err := ensureAppKit(); err != nil {
+		return err
+	}
 
 	// A target class whose -handle: reads the sender's tag and activates it, plus
 	// two main-thread trampolines: -goTraySetup: creates the status item and
 	// applies state, -goTrayRefresh: re-applies state after a change.
-	b.targetCls, _ = objc.RegisterClass(
-		"GoWidgetsTrayTarget",
+	name := "GoWidgetsTrayTarget" + strconv.FormatUint(targetClassSeq.Add(1), 10)
+	cls, err := objc.RegisterClass(
+		name,
 		objc.GetClass("NSObject"),
 		// MethodDef.Fn is the raw Go func; RegisterClass wraps it with NewIMP
 		// itself (wrapping it here would make it re-wrap an IMP and panic).
 		[]objc.MethodDef{
 			{
-				Cmd: sel("handle:"),
+				Cmd: objc.Sel("handle:"),
 				Fn: func(self objc.ID, _cmd objc.SEL, sender objc.ID) {
-					dispatchLeaf(b.items, int(sender.Send(sel("tag"))))
+					dispatchLeaf(b.items, int(sender.Send(objc.Sel("tag"))))
 				},
 			},
 			{
-				Cmd: sel("goTraySetup:"),
+				Cmd: objc.Sel("goTraySetup:"),
 				Fn: func(self objc.ID, _cmd objc.SEL, _ objc.ID) {
 					b.setupOnMain()
 				},
 			},
 			{
-				Cmd: sel("goTrayRefresh:"),
+				Cmd: objc.Sel("goTrayRefresh:"),
 				Fn: func(self objc.ID, _cmd objc.SEL, _ objc.ID) {
 					b.apply(b.pending)
 				},
 			},
 		},
 	)
-	b.target = objc.ID(b.targetCls).Send(sel("alloc")).Send(sel("init"))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrNoTargetClass, err)
+	}
+	b.targetCls = cls
+	b.target = objc.ID(b.targetCls).Send(objc.Sel("alloc")).Send(objc.Sel("init"))
+	// Checked HERE and not only inside setupOnMain: the hop below is itself a
+	// message to b.target, so a nil target would make it a silent no-op and
+	// setupOnMain would never run to report anything at all.
+	if b.target == 0 {
+		return ErrNoTargetClass
+	}
 
 	// All AppKit work happens inside setupOnMain, on the main thread.
-	b.runOnMain(sel("goTraySetup:"))
+	b.setupErr = nil
+	b.runOnMain(objc.Sel("goTraySetup:"))
+	if b.setupErr != nil {
+		return b.setupErr
+	}
 	t.ready()
+	return nil
 }
 
 // runOnMain performs selector s on the process main thread and blocks until it
@@ -121,29 +192,45 @@ func (b *darwinBackend) prepare(t *Tray) {
 // the host's running main run loop (the Attach path). A nil target — Refresh
 // before prepare — makes it a safe Objective-C nil-message no-op.
 func (b *darwinBackend) runOnMain(s objc.SEL) {
-	b.target.Send(sel("performSelectorOnMainThread:withObject:waitUntilDone:"), s, objc.ID(0), true)
+	b.target.Send(objc.Sel("performSelectorOnMainThread:withObject:waitUntilDone:"), s, objc.ID(0), true)
 }
 
 // setupOnMain resolves the shared NSApplication, creates the status-bar item and
-// applies the tray state. It runs on the main thread (AppKit requirement) via
+// applies the tray state, recording in b.setupErr which object AppKit refused if
+// any of them came back nil. It runs on the main thread (AppKit requirement) via
 // runOnMain.
 func (b *darwinBackend) setupOnMain() {
-	b.app = class("NSApplication").Send(sel("sharedApplication"))
-	b.statusBar = class("NSStatusBar").Send(sel("systemStatusBar"))
-	b.item = b.statusBar.Send(sel("statusItemWithLength:"), nsVariableStatusItemLength)
+	b.app = objc.App()
+	b.statusBar = objc.ClassID("NSStatusBar").Send(objc.Sel("systemStatusBar"))
+	// Guarded rather than chained: statusItemWithLength: sent to a nil status
+	// bar would return nil too, and the error would then name the wrong object.
+	if b.statusBar != 0 {
+		b.item = b.statusBar.Send(objc.Sel("statusItemWithLength:"), nsVariableStatusItemLength)
+	}
+	if err := checkNative(uintptr(b.app), uintptr(b.statusBar), uintptr(b.item), uintptr(b.target)); err != nil {
+		b.setupErr = err
+		return
+	}
 	// statusItemWithLength: hands back an autoreleased reference; retain it so the
 	// NSStatusItem lives for the whole process and can't be freed mid-use.
-	b.item.Send(sel("retain"))
+	b.item.Send(objc.Sel("retain"))
 	b.apply(b.pending)
 }
 
+// Run shows the tray and blocks on AppKit's run loop until Quit. It reports the
+// setup failure rather than entering a loop that would return immediately: a
+// [NSApp run] on a nil application is the defect this backend was rewritten for,
+// and it is indistinguishable, from outside, from a clean exit.
 func (b *darwinBackend) Run(t *Tray) error {
 	runtime.LockOSThread()
-	b.prepare(t)
+	if err := b.prepare(t); err != nil {
+		return err
+	}
 	// Run owns the whole process: it is a pure menu-bar app, so hide the dock
-	// tile and start the AppKit run loop (blocks until Quit).
-	b.app.Send(sel("setActivationPolicy:"), nsApplicationActivationPolicyAccessory)
-	b.app.Send(sel("run"))
+	// tile and start the AppKit run loop (blocks until Quit). Both halves are
+	// objc.RunApp's job, and it resolves the application the same way prepare
+	// just did — through objc.App(), on a loaded AppKit.
+	objc.RunApp(nsApplicationActivationPolicyAccessory)
 	return nil
 }
 
@@ -154,13 +241,12 @@ func (b *darwinBackend) Run(t *Tray) error {
 // the AppKit work is marshalled onto the main thread — but the host's main run
 // loop must be running (or about to run) so the marshalled setup can execute.
 func (b *darwinBackend) Attach(t *Tray) error {
-	b.prepare(t)
-	return nil
+	return b.prepare(t)
 }
 
 func (b *darwinBackend) Refresh(t *Tray) {
 	b.pending = t
-	b.runOnMain(sel("goTrayRefresh:"))
+	b.runOnMain(objc.Sel("goTrayRefresh:"))
 }
 
 // apply pushes the tray's icon, tooltip and menu into the live NSStatusItem. It
@@ -170,19 +256,19 @@ func (b *darwinBackend) apply(t *Tray) {
 	if b.item == 0 {
 		return
 	}
-	button := b.item.Send(sel("button"))
+	button := b.item.Send(objc.Sel("button"))
 	if img := nsImageFromPNG(t.Icon()); img != 0 {
-		button.Send(sel("setImage:"), img)
+		button.Send(objc.Sel("setImage:"), img)
 	}
 	if tip := t.Tooltip(); tip != "" {
-		button.Send(sel("setToolTip:"), nsString(tip))
+		button.Send(objc.Sel("setToolTip:"), objc.NSString(tip))
 	}
 	// The click-dispatch table is the shared, unit-tested leafItems() order; the
 	// per-item tags assigned in buildMenu index straight into it.
 	b.items = leafItems(t.Menu())
 	b.tagSeq = 0
 	menu := b.buildMenu(t.Menu())
-	b.item.Send(sel("setMenu:"), menu)
+	b.item.Send(objc.Sel("setMenu:"), menu)
 }
 
 // buildMenu converts a *Menu into an NSMenu, tagging each actionable item with
@@ -190,34 +276,34 @@ func (b *darwinBackend) apply(t *Tray) {
 // the same depth-first pre-order as leafItems, so tagSeq stays in lock-step with
 // b.items.
 func (b *darwinBackend) buildMenu(m *Menu) objc.ID {
-	menu := class("NSMenu").Send(sel("alloc")).Send(sel("init"))
-	menu.Send(sel("setAutoenablesItems:"), false)
+	menu := objc.ClassID("NSMenu").Send(objc.Sel("alloc")).Send(objc.Sel("init"))
+	menu.Send(objc.Sel("setAutoenablesItems:"), false)
 	for _, it := range m.Items {
 		if it.Separator {
-			menu.Send(sel("addItem:"), class("NSMenuItem").Send(sel("separatorItem")))
+			menu.Send(objc.Sel("addItem:"), objc.ClassID("NSMenuItem").Send(objc.Sel("separatorItem")))
 			continue
 		}
-		mi := class("NSMenuItem").Send(sel("alloc")).Send(sel("initWithTitle:action:keyEquivalent:"),
-			nsString(it.Label), sel("handle:"), nsString(""))
+		mi := objc.ClassID("NSMenuItem").Send(objc.Sel("alloc")).Send(objc.Sel("initWithTitle:action:keyEquivalent:"),
+			objc.NSString(it.Label), objc.Sel("handle:"), objc.NSString(""))
 		if it.Submenu != nil {
-			mi.Send(sel("setSubmenu:"), b.buildMenu(it.Submenu))
+			mi.Send(objc.Sel("setSubmenu:"), b.buildMenu(it.Submenu))
 		} else {
 			tag := b.tagSeq
 			b.tagSeq++
-			mi.Send(sel("setTag:"), tag)
-			mi.Send(sel("setTarget:"), b.target)
-			mi.Send(sel("setEnabled:"), !it.Disabled)
+			mi.Send(objc.Sel("setTag:"), tag)
+			mi.Send(objc.Sel("setTarget:"), b.target)
+			mi.Send(objc.Sel("setEnabled:"), !it.Disabled)
 			if it.checkbox && it.Checked {
-				mi.Send(sel("setState:"), 1) // NSControlStateValueOn
+				mi.Send(objc.Sel("setState:"), 1) // NSControlStateValueOn
 			}
 		}
-		menu.Send(sel("addItem:"), mi)
+		menu.Send(objc.Sel("addItem:"), mi)
 	}
 	return menu
 }
 
 func (b *darwinBackend) Quit() {
 	if b.app != 0 {
-		b.app.Send(sel("stop:"), 0)
+		b.app.Send(objc.Sel("stop:"), 0)
 	}
 }

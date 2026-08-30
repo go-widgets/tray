@@ -1,0 +1,312 @@
+//go:build tray_native && darwin
+
+package tray
+
+// The LIVE macOS suite. It really puts a status item in the menu bar of the
+// session it runs in and READS ITS PROPERTIES BACK.
+//
+// It exists because of what the defect it guards against looked like: the
+// backend created an NSStatusItem out of a nil NSApplication, every AppKit call
+// answered zero without complaint, and the program exited 0 having drawn
+// nothing. Nothing short of reading a value back tells that apart from success —
+// "it compiled", "it did not crash" and "the command ran" were all true of the
+// broken build.
+//
+// It is behind the tray_native tag, like the backend it measures, and it skips
+// itself when there is no window server, because a session with no menu bar has
+// nothing to put an item in and failing there would be failing for the wrong
+// reason. Everything it creates, it leaves to the process exit — a test binary
+// that lives for a second is the whole exposure.
+
+import (
+	"os"
+	"runtime"
+	"sync"
+	"testing"
+	"time"
+
+	objc "github.com/go-macos/objc"
+)
+
+const (
+	// NSEventMaskAny is NSUIntegerMax.
+	nsEventMaskAny = ^uint64(0)
+	// The pump's per-turn deadline. It bounds how long a main-thread hop waits.
+	pumpSeconds = 0.02
+	// A live AppKit suite that hangs is the worst failure mode there is: the job
+	// burns its whole budget and reports nothing, which is indistinguishable
+	// from a broken runner.
+	watchdog = 2 * time.Minute
+)
+
+// windowServer is decided once, in TestMain, before AppKit is touched.
+var windowServer bool
+
+// hasWindowServer reports whether this process can reach a window server, by
+// asking whether AppKit can hand back a status bar at all. It is deliberately
+// asked AFTER AppKit is loaded and an application object exists, because
+// +[NSStatusBar systemStatusBar] is meaningless before both.
+func hasWindowServer() bool {
+	return objc.ClassID("NSStatusBar").Send(objc.Sel("systemStatusBar")) != 0
+}
+
+// TestMain pins the process main OS thread, creates the shared NSApplication on
+// it the way a host application would, and then spends its life pumping the main
+// thread while the tests run on another goroutine.
+//
+// The pump is the point. prepare() marshals its AppKit work onto the main thread
+// with -performSelectorOnMainThread:waitUntilDone:YES, and that queue is
+// serviced by a run loop and by nothing else; without a pump here the first test
+// would block for ever. It is a bounded -nextEventMatchingMask: loop rather than
+// [NSApp run] so TestMain can RETURN with the test exit code instead of calling
+// os.Exit from inside a run loop.
+func TestMain(m *testing.M) {
+	runtime.LockOSThread()
+
+	if err := ensureAppKit(); err != nil {
+		os.Stderr.WriteString(err.Error() + "\n")
+		os.Exit(1)
+	}
+	app := objc.App()
+	if app == 0 {
+		os.Stderr.WriteString(ErrNoApplication.Error() + "\n")
+		os.Exit(1)
+	}
+	windowServer = hasWindowServer()
+	if !windowServer {
+		os.Exit(m.Run())
+	}
+	app.Send(objc.Sel("setActivationPolicy:"), nsApplicationActivationPolicyAccessory)
+	app.Send(objc.Sel("finishLaunching"))
+
+	go func() {
+		time.Sleep(watchdog)
+		os.Stderr.WriteString("live suite watchdog fired: the main-thread pump or a hop is stuck\n")
+		os.Exit(1)
+	}()
+
+	result := make(chan int, 1)
+	go func() { result <- m.Run() }()
+	for {
+		select {
+		case code := <-result:
+			os.Exit(code)
+		default:
+		}
+		pumpOnce(app)
+	}
+}
+
+// pumpOnce runs the main run loop for one short turn, delivering any event and
+// servicing the -performSelectorOnMainThread: queue prepare() hops through.
+func pumpOnce(app objc.ID) {
+	objc.AutoreleasePool(func() {
+		until := objc.ClassID("NSDate").Send(objc.Sel("dateWithTimeIntervalSinceNow:"), pumpSeconds)
+		ev := app.Send(objc.Sel("nextEventMatchingMask:untilDate:inMode:dequeue:"),
+			nsEventMaskAny, until, objc.NSString("kCFRunLoopDefaultMode"), true)
+		if ev != 0 {
+			app.Send(objc.Sel("sendEvent:"), ev)
+		}
+	})
+}
+
+func requireWindowServer(t *testing.T) {
+	t.Helper()
+	if !windowServer {
+		t.Skip("no window server in this session: there is no menu bar to test against")
+	}
+}
+
+// The test's own main-thread trampoline: a runtime class whose one method pops
+// a closure off testHopQ and runs it. AppKit properties are READ through it
+// rather than off the test goroutine, for exactly the reason the package WRITES
+// them through one — a property read from a thread that is not the main one is
+// undefined, and undefined here means "usually right".
+var (
+	testHopQ       = make(chan func(), 8)
+	testTargetOnce sync.Once
+	testTarget     objc.ID
+	testTargetErr  error
+)
+
+func hopTarget() (objc.ID, error) {
+	testTargetOnce.Do(func() {
+		cls, err := objc.RegisterClass("GoWidgetsTrayTestHop", objc.GetClass("NSObject"),
+			[]objc.MethodDef{{
+				Cmd: objc.Sel("goTrayTestHop:"),
+				Fn: func(self objc.ID, _ objc.SEL, _ objc.ID) {
+					select {
+					case fn := <-testHopQ:
+						fn()
+					default:
+					}
+				},
+			}})
+		if err != nil {
+			testTargetErr = err
+			return
+		}
+		testTarget = objc.ID(cls).Send(objc.Sel("alloc")).Send(objc.Sel("init"))
+		if testTarget == 0 {
+			testTargetErr = ErrNoTargetClass
+		}
+	})
+	return testTarget, testTargetErr
+}
+
+// onMain runs fn on the process main thread and returns once it has finished.
+// waitUntilDone: is YES, so the send itself is the rendezvous; the watchdog in
+// TestMain is what bounds a main thread that has stopped pumping.
+func onMain(t *testing.T, fn func()) {
+	t.Helper()
+	target, err := hopTarget()
+	if err != nil {
+		t.Fatalf("registering the test hop class: %v", err)
+	}
+	done := make(chan struct{})
+	testHopQ <- func() { fn(); close(done) }
+	target.Send(objc.Sel("performSelectorOnMainThread:withObject:waitUntilDone:"),
+		objc.Sel("goTrayTestHop:"), objc.ID(0), true)
+	<-done
+}
+
+// TestLiveAttachPutsARealItemInTheMenuBar is the measurement the fix is claimed
+// on. It asserts the two values the broken build reported as zero — the
+// application and the status item — and then the one that distinguishes an item
+// AppKit merely ALLOCATED from one it actually PLACED: the button's window.
+func TestLiveAttachPutsARealItemInTheMenuBar(t *testing.T) {
+	requireWindowServer(t)
+
+	b := &darwinBackend{}
+	tr := New(nil).WithBackend(b).SetTooltip("live test")
+	tr.SetMenu(NewMenu().Add(Item("Quit", func() {})))
+	if err := b.Attach(tr); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	var (
+		app, item, button, window objc.ID
+		tooltip                   string
+		rows                      int
+	)
+	onMain(t, func() {
+		app, item = b.app, b.item
+		if item != 0 {
+			button = item.Send(objc.Sel("button"))
+			if button != 0 {
+				window = button.Send(objc.Sel("window"))
+				tooltip = objc.GoString(button.Send(objc.Sel("toolTip")))
+			}
+			if menu := item.Send(objc.Sel("menu")); menu != 0 {
+				rows = int(menu.Send(objc.Sel("numberOfItems")))
+			}
+		}
+	})
+
+	// The two values the defect reported as zero, in the same shape the broken
+	// build's traces printed them.
+	t.Logf("app=%#x item=%#x button=%#x window=%#x", uintptr(app), uintptr(item), uintptr(button), uintptr(window))
+	if app == 0 {
+		t.Fatal("app is nil: AppKit is still not loaded where NSApplication is named")
+	}
+	if item == 0 {
+		t.Fatal("item is nil: no NSStatusItem was created")
+	}
+	if button == 0 {
+		t.Fatal("the status item has no button")
+	}
+	// The one that cannot be faked by allocation: an item AppKit refused to place
+	// has no window, and nothing else about it differs.
+	if window == 0 {
+		t.Error("the status item has no window: it was created but never placed in the menu bar")
+	}
+	// Properties read BACK out of AppKit, which is what tells a configured item
+	// apart from a merely allocated one.
+	if tooltip != "live test" {
+		t.Errorf("the button's tooltip reads %q, want %q", tooltip, "live test")
+	}
+	if rows != 1 {
+		t.Errorf("the item's menu has %d rows, want 1", rows)
+	}
+
+	// The negative control for every non-nil check above: a class that does not
+	// exist yields the nil class, and a message to nil yields nil. If the
+	// lookups above "succeeded" vacuously, this would come back non-nil too.
+	var bogus objc.ID
+	onMain(t, func() {
+		bogus = objc.ClassID("NSStatusBarThereIsNoSuchClass").Send(objc.Sel("systemStatusBar"))
+	})
+	if bogus != 0 {
+		t.Error("a nonexistent class answered systemStatusBar; the checks above prove nothing")
+	}
+}
+
+// TestLiveClickDispatchReachesTheGoHandler chooses a row through AppKit's own
+// dispatch, so the registered runtime class, the NSMenuItem tag and the Go table
+// are all exercised — not a Go function called directly.
+func TestLiveClickDispatchReachesTheGoHandler(t *testing.T) {
+	requireWindowServer(t)
+
+	b := &darwinBackend{}
+	ran := make(chan string, 2)
+	tr := New(nil).WithBackend(b)
+	tr.SetMenu(NewMenu().Add(
+		&MenuItem{Label: "heading", Disabled: true},
+		Separator(),
+		Item("Pause", func() { ran <- "pause" }),
+	))
+	if err := b.Attach(tr); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	onMain(t, func() {
+		b.item.Send(objc.Sel("menu")).Send(objc.Sel("performActionForItemAtIndex:"), 2)
+	})
+	select {
+	case got := <-ran:
+		if got != "pause" {
+			t.Errorf("row 2 ran %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("choosing the row ran no handler")
+	}
+
+	// The negative controls: the heading is disabled and row 1 is a separator,
+	// so AppKit must dispatch nothing for either.
+	onMain(t, func() {
+		b.item.Send(objc.Sel("menu")).Send(objc.Sel("performActionForItemAtIndex:"), 0)
+		b.item.Send(objc.Sel("menu")).Send(objc.Sel("performActionForItemAtIndex:"), 1)
+	})
+	select {
+	case got := <-ran:
+		t.Errorf("a disabled row or a separator ran %q", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestLiveTwoBackendsEachGetTheirOwnTargetClass covers the reason the target
+// class name carries a sequence number: objc_allocateClassPair refuses a
+// duplicate name and returns nil, and a menu whose rows have a nil target draws
+// perfectly and answers no click.
+func TestLiveTwoBackendsEachGetTheirOwnTargetClass(t *testing.T) {
+	requireWindowServer(t)
+
+	a, c := &darwinBackend{}, &darwinBackend{}
+	for _, b := range []*darwinBackend{a, c} {
+		tr := New(nil).WithBackend(b)
+		tr.SetMenu(NewMenu().Add(Item("x", func() {})))
+		if err := b.Attach(tr); err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+	}
+	if a.targetCls == 0 || c.targetCls == 0 {
+		t.Fatalf("target classes %#x and %#x: one of them is nil", uintptr(a.targetCls), uintptr(c.targetCls))
+	}
+	if a.targetCls == c.targetCls {
+		t.Errorf("both backends share class %#x; the second registration must have been refused",
+			uintptr(a.targetCls))
+	}
+	if a.target == 0 || c.target == 0 {
+		t.Errorf("target instances %#x and %#x: one of them is nil", uintptr(a.target), uintptr(c.target))
+	}
+}
