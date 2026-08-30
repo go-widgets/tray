@@ -36,6 +36,12 @@ jobs:
       - name: test with the native backend linked in
         env: { CGO_ENABLED: "0" }
         run: go test -tags tray_native ./...
+      - name: say whether the live suite RAN or skipped
+        # A green lane that skipped everything is the same blind spot in a new
+        # place. The live tests skip themselves without a window server, so the
+        # log has to say which happened rather than leaving "ok" to imply it.
+        env: { CGO_ENABLED: "0" }
+        run: go test -tags tray_native -run Live -v ./...
       - name: test without it, on darwin too
         env: { CGO_ENABLED: "0" }
         run: go test ./...
