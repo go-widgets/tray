@@ -1,0 +1,6 @@
+
+# Built binaries. `go build ./examples/traydemo` writes one HERE, named after
+# the package; one was committed that way, 3.5 MB of a 5 MB repository, and a
+# repository keeps what it is given for ever.
+/traydemo
+/examples/traydemo/traydemo
