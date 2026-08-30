@@ -17,6 +17,29 @@ jobs:
           total=$(go tool cover -func=cov.out | awk '/^total:/{print $3}')
           echo "coverage: $total"
           [ "$total" = "100.0%" ] || { go tool cover -func=cov.out | awk '$3!="100.0%"'; exit 1; }
+  # The native backend was BUILT here for a long time and never RUN. That is
+  # how `go test -tags tray_native ./...` came to die on SIGTRAP over a suite
+  # CI reported as green: two assertions written for the untagged build entered
+  # [NSApp run] from a goroutine, and AppKit traps rather than fails.
+  #
+  # Compiling a backend proves the calls exist. Running it is what proves they
+  # answer.
+  #
+  # The live tests skip themselves when there is no window server, so this lane
+  # is meaningful on a runner with one and honest on a runner without.
+  darwin-native:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: stable }
+      - name: test with the native backend linked in
+        env: { CGO_ENABLED: "0" }
+        run: go test -tags tray_native ./...
+      - name: test without it, on darwin too
+        env: { CGO_ENABLED: "0" }
+        run: go test ./...
+
   build:
     runs-on: ubuntu-latest
     strategy:
