@@ -5,8 +5,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version: stable }
       - run: go vet ./...
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
@@ -28,8 +28,8 @@ jobs:
           - { goos: linux, goarch: amd64 }
           - { goos: linux, goarch: arm64 }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version: stable }
       - name: build core
         env: { GOOS: "${{ matrix.goos }}", GOARCH: "${{ matrix.goarch }}", CGO_ENABLED: "0" }
