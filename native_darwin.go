@@ -283,6 +283,12 @@ func (b *darwinBackend) apply(t *Tray) {
 	button := b.item.Send(objc.Sel("button"))
 	if img := nsImageFromPNG(t.Icon()); img != 0 {
 		button.Send(objc.Sel("setImage:"), img)
+		// setImage: retains, so the reference alloc gave us is ours to drop.
+		// Without this every refresh leaks an NSImage and its bitmap. That was
+		// survivable while the icon changed twice a minute and stops being so
+		// the moment one animates: a caller redrawing five times a second
+		// leaks eighteen thousand images an hour.
+		img.Send(objc.Sel("release"))
 	}
 	if tip := t.Tooltip(); tip != "" {
 		button.Send(objc.Sel("setToolTip:"), objc.NSString(tip))
