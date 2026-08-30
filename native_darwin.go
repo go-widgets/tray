@@ -144,8 +144,10 @@ func nsImageFromPNG(png []byte) objc.ID {
 			Height: menuBarPoints,
 		})
 	}
-	// a template image adapts to light/dark menu bars
-	img.Send(objc.Sel("setTemplate:"), true)
+	// A template image adapts to light/dark menu bars -- and is RECOLOURED to do
+	// it, so an icon carrying colour must not be one or the colour is the first
+	// thing lost. Decided from the picture: see IsTemplate.
+	img.Send(objc.Sel("setTemplate:"), IsTemplate(png))
 	return img
 }
 
