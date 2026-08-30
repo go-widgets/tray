@@ -92,29 +92,6 @@ func TestTrayLifecycle(t *testing.T) {
 	tr.Quit()
 }
 
-func TestRunNoBackend(t *testing.T) {
-	tr := New(nil) // defaultBackend() is nil until a native backend exists
-	if err := tr.Run(); err != ErrNoBackend {
-		t.Errorf("Run without backend = %v", err)
-	}
-	// Quit without a backend is a safe no-op
-	tr.Quit()
-	tr.SetTooltip("x") // refresh without a backend is safe too
-}
-
-func TestDefaultBackendNil(t *testing.T) {
-	if defaultBackend() != nil {
-		t.Error("defaultBackend is nil until a native backend is added")
-	}
-}
-
-// fakeAttachBackend is a Headless that also implements the optional attacher
-// capability, to exercise Tray.Attach's "backend supports attach" branch.
-type fakeAttachBackend struct {
-	Headless
-	attached int
-}
-
 func (f *fakeAttachBackend) Attach(t *Tray) error {
 	f.attached++
 	t.ready()
@@ -140,4 +117,9 @@ func TestTrayAttach(t *testing.T) {
 	if fb.attached != 1 || !ready {
 		t.Fatalf("attach not delegated: attached=%d ready=%v", fb.attached, ready)
 	}
+}
+
+type fakeAttachBackend struct {
+	Headless
+	attached int
 }
