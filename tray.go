@@ -12,7 +12,10 @@
 // All CGO_ENABLED=0. A headless backend backs tests and display-less CI.
 package tray
 
-import "errors"
+import (
+	"errors"
+	"sync"
+)
 
 // ErrNoBackend is returned by Run when no platform backend has been set (and
 // none was selected for the current OS).
@@ -113,7 +116,16 @@ type Backend interface {
 }
 
 // Tray is a system-tray icon with a tooltip and a menu.
+//
+// What it SHOWS -- icon, tooltip, menu -- is read by the platform loop and
+// written by whoever changes it, and those are not the same goroutine: an icon
+// bound to application state (see [BindIcon]) is written by a ticker while the
+// loop is drawing. So the three are behind a lock. The backend and the ready
+// callback are not: they are set while the tray is being built, before anything
+// runs, and a tray whose backend changed underneath a running loop would be a
+// different bug entirely.
 type Tray struct {
+	mu      sync.RWMutex
 	icon    []byte // PNG bytes
 	tooltip string
 	menu    *Menu
@@ -132,21 +144,29 @@ func (t *Tray) WithBackend(b Backend) *Tray { t.backend = b; return t }
 
 // SetTooltip sets the hover tooltip and refreshes if running.
 func (t *Tray) SetTooltip(s string) *Tray {
+	t.mu.Lock()
 	t.tooltip = s
+	t.mu.Unlock()
+	// Refreshed OUTSIDE the lock: a backend reads the tray back to re-apply it,
+	// and reading it while still holding the write lock is a deadlock.
 	t.refresh()
 	return t
 }
 
 // SetIcon replaces the icon (PNG bytes) and refreshes if running.
 func (t *Tray) SetIcon(iconPNG []byte) *Tray {
+	t.mu.Lock()
 	t.icon = iconPNG
+	t.mu.Unlock()
 	t.refresh()
 	return t
 }
 
 // SetMenu sets the tray menu and refreshes if running.
 func (t *Tray) SetMenu(m *Menu) *Tray {
+	t.mu.Lock()
 	t.menu = m
+	t.mu.Unlock()
 	t.refresh()
 	return t
 }
@@ -154,10 +174,25 @@ func (t *Tray) SetMenu(m *Menu) *Tray {
 // OnReady registers a callback run once the tray is live (after Run starts).
 func (t *Tray) OnReady(fn func()) *Tray { t.onReady = fn; return t }
 
-// Accessors used by backends.
-func (t *Tray) Icon() []byte    { return t.icon }
-func (t *Tray) Tooltip() string { return t.tooltip }
-func (t *Tray) Menu() *Menu     { return t.menu }
+// Accessors used by backends, safe to call from the platform loop while another
+// goroutine is setting them.
+func (t *Tray) Icon() []byte {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.icon
+}
+
+func (t *Tray) Tooltip() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.tooltip
+}
+
+func (t *Tray) Menu() *Menu {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.menu
+}
 
 // ready is called by a backend once its event loop is live.
 func (t *Tray) ready() {
