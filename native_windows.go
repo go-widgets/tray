@@ -1,4 +1,4 @@
-//go:build tray_native && windows
+//go:build windows
 
 package tray
 
@@ -108,7 +108,7 @@ type windowsBackend struct {
 	added  bool
 }
 
-// defaultBackend links the Windows Shell_NotifyIcon backend under -tags tray_native.
+// defaultBackend links the Windows Shell_NotifyIcon backend.
 func defaultBackend() Backend { return &windowsBackend{} }
 
 func (b *windowsBackend) Run(t *Tray) error {

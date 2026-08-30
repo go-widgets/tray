@@ -1,4 +1,4 @@
-//go:build tray_native && darwin
+//go:build darwin
 
 package tray
 
@@ -12,7 +12,7 @@ package tray
 // "it compiled", "it did not crash" and "the command ran" were all true of the
 // broken build.
 //
-// It is behind the tray_native tag, like the backend it measures, and it skips
+// It skips
 // itself when there is no window server, because a session with no menu bar has
 // nothing to put an item in and failing there would be failing for the wrong
 // reason. Everything it creates, it leaves to the process exit — a test binary

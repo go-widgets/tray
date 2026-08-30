@@ -1,4 +1,4 @@
-//go:build tray_native && darwin
+//go:build darwin
 
 package tray
 
@@ -16,7 +16,7 @@ import "testing"
 func TestDefaultBackendIsThereWhenLinkedIn(t *testing.T) {
 	b := defaultBackend()
 	if b == nil {
-		t.Fatal("defaultBackend() is nil in a tray_native build: the backend was not linked in")
+		t.Fatal("defaultBackend() is nil on a platform that has one: it was not linked in")
 	}
 	if _, ok := b.(*darwinBackend); !ok {
 		t.Errorf("defaultBackend() is %T, want *darwinBackend", b)

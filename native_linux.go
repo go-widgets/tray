@@ -1,4 +1,4 @@
-//go:build tray_native && linux
+//go:build linux
 
 package tray
 
@@ -79,7 +79,7 @@ type linuxBackend struct {
 	quitOnce  sync.Once
 }
 
-// defaultBackend links the StatusNotifierItem backend under -tags tray_native.
+// defaultBackend links the StatusNotifierItem backend.
 func defaultBackend() Backend { return &linuxBackend{} }
 
 func (b *linuxBackend) Run(t *Tray) error {
