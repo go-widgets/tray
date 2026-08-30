@@ -24,7 +24,10 @@ import (
 	"image/color"
 	pngenc "image/png"
 	"os"
+	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -370,4 +373,74 @@ func tallPNG(t *testing.T, w, h int) []byte {
 		t.Fatalf("encode the probe image: %v", err)
 	}
 	return b.Bytes()
+}
+
+// TestLiveRefreshingTheIconDoesNotGrowTheProcess measures the thing a leak
+// actually is: memory that goes up and does not come down.
+//
+// -[NSImage alloc] hands over a reference the caller owns and setImage: takes
+// its own, so keeping ours strands an NSImage and its bitmap on every refresh.
+// It is invisible — nothing fails, and it is kilobytes at a time — until an
+// animated icon turns it into eighteen thousand images an hour.
+//
+// retainCount is NOT the instrument for this, though it is the obvious one. It
+// counts pending autoreleases too, so it reports the same number with the
+// release and without it, and a test built on it passes for the wrong reason.
+// Resident size across many refreshes is coarse, and it is the claim.
+func TestLiveRefreshingTheIconDoesNotGrowTheProcess(t *testing.T) {
+	requireWindowServer(t)
+
+	b := &darwinBackend{}
+	// WithBackend matters: New() installs a backend of its own, so a tray built
+	// without it refreshes a DIFFERENT object than the one attached here and
+	// this test measures nothing. It did, at first.
+	tr := New(smallPNG(t)).WithBackend(b)
+	if err := b.Attach(tr); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	icons := [][]byte{smallPNG(t), smallPNG(t)}
+
+	const rounds = 4000
+	// Warm up first: the first refreshes fault in AppKit machinery that would
+	// otherwise be counted as growth.
+	for i := 0; i < 200; i++ {
+		objc.AutoreleasePool(func() { tr.SetIcon(icons[i%2]) })
+	}
+	before := residentKB(t)
+	for i := 0; i < rounds; i++ {
+		objc.AutoreleasePool(func() { tr.SetIcon(icons[i%2]) })
+	}
+	after := residentKB(t)
+
+	grew := after - before
+	// The allowance is set from an A/B on this machine rather than guessed:
+	// 4000 refreshes grew the process by 7488 KB with the release in place and
+	// 31232 KB with it removed. 15000 KB sits between the two, so the test
+	// fails on the regression and tolerates the remainder.
+	//
+	// That remainder — about 1.9 KB a refresh — is NOT explained. Something in
+	// the refresh path accumulates besides the image, and this test deliberately
+	// does not pretend otherwise. It is small enough to ignore at two refreshes
+	// a minute and worth returning to before anything refreshes faster.
+	const allowKB = 15000
+	t.Logf("resident %d KB -> %d KB over %d refreshes (%+d KB)", before, after, rounds, grew)
+	if grew > allowKB {
+		t.Errorf("the process grew %d KB over %d icon refreshes, allowance %d KB: "+
+			"each refresh is stranding an NSImage and its bitmap", grew, rounds, allowKB)
+	}
+}
+
+// residentKB is this process's resident size, asked of the system rather than
+// of the Go runtime, which cannot see an Objective-C allocation at all.
+func residentKB(t *testing.T) int {
+	t.Helper()
+	out, err := exec.Command("ps", "-o", "rss=", "-p", strconv.Itoa(os.Getpid())).Output()
+	if err != nil {
+		t.Skipf("cannot read resident size: %v", err)
+	}
+	kb, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Skipf("cannot parse resident size %q: %v", out, err)
+	}
+	return kb
 }
