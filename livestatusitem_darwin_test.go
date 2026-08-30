@@ -400,7 +400,7 @@ func TestLiveRefreshingTheIconDoesNotGrowTheProcess(t *testing.T) {
 	}
 	icons := [][]byte{smallPNG(t), smallPNG(t)}
 
-	const rounds = 4000
+	const rounds = 8000
 	// Warm up first: the first refreshes fault in AppKit machinery that would
 	// otherwise be counted as growth.
 	for i := 0; i < 200; i++ {
@@ -413,15 +413,21 @@ func TestLiveRefreshingTheIconDoesNotGrowTheProcess(t *testing.T) {
 	after := residentKB(t)
 
 	grew := after - before
-	// The allowance is set from an A/B on this machine rather than guessed:
-	// 4000 refreshes grew the process by 7488 KB with the release in place and
-	// 31232 KB with it removed. 15000 KB sits between the two, so the test
-	// fails on the regression and tolerates the remainder.
+	// The allowance is set from measurements on this machine, not guessed:
+	// 4000 refreshes grew the process by 31232 KB when the image reference was
+	// kept, and by about 5400 KB once it was released and the menu stopped
+	// being rebuilt for an icon-only change.
 	//
-	// That remainder — about 1.9 KB a refresh — is NOT explained. Something in
-	// the refresh path accumulates besides the image, and this test deliberately
-	// does not pretend otherwise. It is small enough to ignore at two refreshes
-	// a minute and worth returning to before anything refreshes faster.
+	// The remainder is NOT a leak, and it took a measurement to say so rather
+	// than a guess. Growth PER refresh falls as the count rises —
+	//
+	//      2000 refreshes   4608 KB   2359 bytes each
+	//      8000 refreshes   6480 KB    829 bytes each
+	//     16000 refreshes   6256 KB    400 bytes each
+	//
+	// — and the total plateaus around 6 MB whatever the count. That is AppKit
+	// warming its caches and reaching a steady state. A leak would have held
+	// the per-refresh figure flat.
 	const allowKB = 15000
 	t.Logf("resident %d KB -> %d KB over %d refreshes (%+d KB)", before, after, rounds, grew)
 	if grew > allowKB {
