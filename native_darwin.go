@@ -385,8 +385,20 @@ func (b *darwinBackend) buildMenu(m *Menu) objc.ID {
 	return menu
 }
 
+// Quit asks the run loop Run entered to return, and WAKES it so that it does.
+//
+// -[NSApplication stop:] only sets a flag, which AppKit reads after it finishes
+// processing an event. A menu-bar program with nobody touching it is sitting in
+// -nextEventMatchingMask: waiting for an event that is never coming, so the
+// flag is never read and Run never returns. Measured: a desk that runs this
+// loop while it waits for a headset found one, called Quit, and hung at 0% CPU
+// until somebody moved the mouse -- in a program whose whole point is that it
+// starts by itself.
+//
+// objc.StopApp sets the flag and then stops the main thread's run loop, which
+// makes the event wait return, which lets AppKit read the flag it was given.
 func (b *darwinBackend) Quit() {
 	if b.app != 0 {
-		b.app.Send(objc.Sel("stop:"), 0)
+		objc.StopApp()
 	}
 }
