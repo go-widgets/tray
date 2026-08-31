@@ -452,8 +452,8 @@ func residentKB(t *testing.T) int {
 }
 
 // TestLiveRunningTwiceKeepsOneItemInTheMenuBar is the defect a person reported
-// by looking at their menu bar: "pourquoi le fait de choisir les lunettes et
-// valider avec save ouvre une seconde icon dans le tray?".
+// by looking at their menu bar: "why does choosing the glasses and confirming
+// with Save open a second icon in the tray?".
 //
 // statusItemWithLength: makes a NEW item every time it is sent, and the item
 // already in the bar is retained and does not go away. A program that runs the
