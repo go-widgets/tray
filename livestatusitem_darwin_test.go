@@ -450,3 +450,60 @@ func residentKB(t *testing.T) int {
 	}
 	return kb
 }
+
+// TestLiveRunningTwiceKeepsOneItemInTheMenuBar is the defect a person reported
+// by looking at their menu bar: "pourquoi le fait de choisir les lunettes et
+// valider avec save ouvre une seconde icon dans le tray?".
+//
+// statusItemWithLength: makes a NEW item every time it is sent, and the item
+// already in the bar is retained and does not go away. A program that runs the
+// loop, stops it to show a window and takes the loop back afterwards calls
+// prepare each time -- go-xrkit/desk does exactly that around its settings
+// window -- and grew one more pair of glasses in the menu bar per round trip.
+//
+// The class and the target instance are checked alongside it for the same
+// reason: registering a fresh Objective-C class per call would grow the
+// runtime's class table for the life of the process, invisibly.
+func TestLiveRunningTwiceKeepsOneItemInTheMenuBar(t *testing.T) {
+	requireWindowServer(t)
+
+	b := &darwinBackend{}
+	tr := New(nil).WithBackend(b)
+	tr.SetMenu(NewMenu().Add(Item("x", func() {})))
+	if err := b.Attach(tr); err != nil {
+		t.Fatalf("first Attach: %v", err)
+	}
+	item, cls, target := b.item, b.targetCls, b.target
+	if item == 0 {
+		t.Fatal("no status item after the first attach")
+	}
+
+	// Three more times: a person who opens the settings twice must not end up
+	// with three icons, and the count has to stay flat rather than merely grow
+	// slower.
+	for i := range 3 {
+		if err := b.Attach(tr); err != nil {
+			t.Fatalf("attach %d: %v", i+2, err)
+		}
+		if b.item != item {
+			t.Fatalf("attach %d made a new status item %#x; the first one (%#x) is still "+
+				"in the menu bar and nothing can remove it",
+				i+2, uintptr(b.item), uintptr(item))
+		}
+		if b.targetCls != cls {
+			t.Errorf("attach %d registered another target class %#x", i+2, uintptr(b.targetCls))
+		}
+		if b.target != target {
+			t.Errorf("attach %d made another target instance %#x", i+2, uintptr(b.target))
+		}
+	}
+
+	// And the item still WORKS: reused is not the same as left behind. The icon
+	// it shows follows the tray, which is what a second run is for.
+	tr.SetIcon(pngOf(t, 36, 36, func(x, y int) color.NRGBA {
+		return color.NRGBA{A: 0xFF}
+	}))
+	if got := b.item.Send(objc.Sel("button")).Send(objc.Sel("image")); got == 0 {
+		t.Error("the reused item has no image; it is in the bar but no longer follows the tray")
+	}
+}
