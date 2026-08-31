@@ -105,6 +105,12 @@ type darwinBackend struct {
 	// hop. runOnMain waits for the selector to finish, so it is written and
 	// read on either side of a rendezvous rather than concurrently.
 	setupErr error
+	// stopping is what Run watches and Quit sets, from any goroutine.
+	//
+	// It replaces -[NSApplication stop:], which sets a flag AppKit reads only
+	// after processing an event: a menu-bar program with nobody touching it
+	// waits for an event that never comes, and Run never returns.
+	stopping atomic.Bool
 	// lastMenuSig is the signature of the menu currently on screen, so an
 	// icon-only refresh does not rebuild it. Written and read on the main
 	// thread only, like the rest of the AppKit state above.
@@ -286,11 +292,13 @@ func (b *darwinBackend) Run(t *Tray) error {
 	if err := b.prepare(t); err != nil {
 		return err
 	}
-	// Run owns the whole process: it is a pure menu-bar app, so hide the dock
-	// tile and start the AppKit run loop (blocks until Quit). Both halves are
-	// objc.RunApp's job, and it resolves the application the same way prepare
-	// just did — through objc.App(), on a loaded AppKit.
-	objc.RunApp(nsApplicationActivationPolicyAccessory)
+	// RunAppLoop rather than RunApp, because RunApp cannot be LEFT.
+	// -[NSApplication run] reads stop:'s flag only after it has processed an
+	// event, so a program nobody is touching waits for an event that never
+	// comes and Run never returns. RunAppLoop is the same loop with the caller
+	// asked between events, and Quit wakes the wait so the question gets asked.
+	b.stopping.Store(false)
+	objc.RunAppLoop(nsApplicationActivationPolicyAccessory, b.stopping.Load)
 	return nil
 }
 
@@ -398,7 +406,8 @@ func (b *darwinBackend) buildMenu(m *Menu) objc.ID {
 // objc.StopApp sets the flag and then stops the main thread's run loop, which
 // makes the event wait return, which lets AppKit read the flag it was given.
 func (b *darwinBackend) Quit() {
-	if b.app != 0 {
-		objc.StopApp()
-	}
+	b.stopping.Store(true)
+	// And WAKE the wait, or the question is not asked until an event happens to
+	// arrive -- which, in a program nobody is touching, is never.
+	objc.WakeMainRunLoop()
 }

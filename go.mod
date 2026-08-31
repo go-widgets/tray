@@ -13,5 +13,5 @@ require github.com/go-widgets/mvvm v0.8.0
 
 require (
 	github.com/ebitengine/purego v0.10.2 // indirect
-	github.com/go-macos/objc v0.8.0
+	github.com/go-macos/objc v0.9.1
 )
