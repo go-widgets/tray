@@ -296,8 +296,16 @@ func (b *darwinBackend) Run(t *Tray) error {
 	// -[NSApplication run] reads stop:'s flag only after it has processed an
 	// event, so a program nobody is touching waits for an event that never
 	// comes and Run never returns. RunAppLoop is the same loop with the caller
-	// asked between events, and Quit wakes the wait so the question gets asked.
-	b.stopping.Store(false)
+	// asked between events and a bounded wait, so the question gets asked
+	// whether or not anything happens.
+	//
+	// The flag is cleared as Run RETURNS, not as it starts. This tray is run,
+	// released and run again -- a desk holds the loop while it waits for a
+	// headset and hands it back when it finds one -- and a Quit that arrives
+	// before Run has entered the loop must not be forgotten. Clearing on the
+	// way in did exactly that, and it is the shape the defect takes when the
+	// thing being waited for is ALREADY there.
+	defer b.stopping.Store(false)
 	objc.RunAppLoop(nsApplicationActivationPolicyAccessory, b.stopping.Load)
 	return nil
 }
