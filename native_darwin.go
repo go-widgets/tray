@@ -157,6 +157,11 @@ func nsImageFromPNG(png []byte) objc.ID {
 // AppKit setup onto the main thread and reports what it found there. Shared by
 // Run and Attach; it does NOT touch the activation policy or start a run loop,
 // so a host that owns those is unaffected.
+//
+// ONCE per backend for the class and the target, like the status item itself: a
+// program that runs the loop, stops it to show a window and runs it again calls
+// this each time, and registering a fresh Objective-C class per call would grow
+// the runtime's class table for the life of the process.
 func (b *darwinBackend) prepare(t *Tray) error {
 	b.pending = t
 
@@ -164,52 +169,54 @@ func (b *darwinBackend) prepare(t *Tray) error {
 		return err
 	}
 
-	// A target class whose -handle: reads the sender's tag and activates it, plus
-	// two main-thread trampolines: -goTraySetup: creates the status item and
-	// applies state, -goTrayRefresh: re-applies state after a change.
-	name := "GoWidgetsTrayTarget" + strconv.FormatUint(targetClassSeq.Add(1), 10)
-	cls, err := objc.RegisterClass(
-		name,
-		objc.GetClass("NSObject"),
-		// MethodDef.Fn is the raw Go func; RegisterClass wraps it with NewIMP
-		// itself (wrapping it here would make it re-wrap an IMP and panic).
-		[]objc.MethodDef{
-			{
-				Cmd: objc.Sel("handle:"),
-				Fn: func(self objc.ID, _cmd objc.SEL, sender objc.ID) {
-					dispatchLeaf(b.items, int(sender.Send(objc.Sel("tag"))))
-				},
-			},
-			{
-				Cmd: objc.Sel("goTraySetup:"),
-				Fn: func(self objc.ID, _cmd objc.SEL, _ objc.ID) {
-					b.setupOnMain()
-				},
-			},
-			{
-				Cmd: objc.Sel("goTrayRefresh:"),
-				Fn: func(self objc.ID, _cmd objc.SEL, _ objc.ID) {
-					// A pool of its own: this runs on the MAIN thread, so a
-					// caller's pool does not cover it, and the autoreleased
-					// NSData and NSString every refresh makes would sit until
-					// the run loop happened to drain. An animated icon
-					// refreshes several times a second, and the drain is not
-					// on that schedule.
-					objc.AutoreleasePool(func() { b.apply(b.pending) })
-				},
-			},
-		},
-	)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrNoTargetClass, err)
-	}
-	b.targetCls = cls
-	b.target = objc.ID(b.targetCls).Send(objc.Sel("alloc")).Send(objc.Sel("init"))
-	// Checked HERE and not only inside setupOnMain: the hop below is itself a
-	// message to b.target, so a nil target would make it a silent no-op and
-	// setupOnMain would never run to report anything at all.
 	if b.target == 0 {
-		return ErrNoTargetClass
+		// A target class whose -handle: reads the sender's tag and activates it,
+		// plus two main-thread trampolines: -goTraySetup: creates the status item
+		// and applies state, -goTrayRefresh: re-applies state after a change.
+		name := "GoWidgetsTrayTarget" + strconv.FormatUint(targetClassSeq.Add(1), 10)
+		cls, err := objc.RegisterClass(
+			name,
+			objc.GetClass("NSObject"),
+			// MethodDef.Fn is the raw Go func; RegisterClass wraps it with NewIMP
+			// itself (wrapping it here would make it re-wrap an IMP and panic).
+			[]objc.MethodDef{
+				{
+					Cmd: objc.Sel("handle:"),
+					Fn: func(self objc.ID, _cmd objc.SEL, sender objc.ID) {
+						dispatchLeaf(b.items, int(sender.Send(objc.Sel("tag"))))
+					},
+				},
+				{
+					Cmd: objc.Sel("goTraySetup:"),
+					Fn: func(self objc.ID, _cmd objc.SEL, _ objc.ID) {
+						b.setupOnMain()
+					},
+				},
+				{
+					Cmd: objc.Sel("goTrayRefresh:"),
+					Fn: func(self objc.ID, _cmd objc.SEL, _ objc.ID) {
+						// A pool of its own: this runs on the MAIN thread, so a
+						// caller's pool does not cover it, and the autoreleased
+						// NSData and NSString every refresh makes would sit until
+						// the run loop happened to drain. An animated icon
+						// refreshes several times a second, and the drain is not
+						// on that schedule.
+						objc.AutoreleasePool(func() { b.apply(b.pending) })
+					},
+				},
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrNoTargetClass, err)
+		}
+		b.targetCls = cls
+		b.target = objc.ID(b.targetCls).Send(objc.Sel("alloc")).Send(objc.Sel("init"))
+		// Checked HERE and not only inside setupOnMain: the hop below is itself a
+		// message to b.target, so a nil target would make it a silent no-op and
+		// setupOnMain would never run to report anything at all.
+		if b.target == 0 {
+			return ErrNoTargetClass
+		}
 	}
 
 	// All AppKit work happens inside setupOnMain, on the main thread.
@@ -235,21 +242,38 @@ func (b *darwinBackend) runOnMain(s objc.SEL) {
 // applies the tray state, recording in b.setupErr which object AppKit refused if
 // any of them came back nil. It runs on the main thread (AppKit requirement) via
 // runOnMain.
+//
+// ONE item, however often this runs. statusItemWithLength: makes a NEW item
+// every time it is sent, and the one already in the bar is retained and does
+// not go away, so a program that runs its tray, quits the loop to show a window
+// and runs it again ends up with two icons in the menu bar and no way to get rid
+// of either. That is a real sequence, not a hypothetical: go-xrkit/desk holds
+// the loop while it waits for a headset, hands the main thread to its settings
+// window, and takes the loop back afterwards -- and grew a second pair of
+// glasses in the menu bar every time somebody pressed Save.
 func (b *darwinBackend) setupOnMain() {
 	b.app = objc.App()
-	b.statusBar = objc.ClassID("NSStatusBar").Send(objc.Sel("systemStatusBar"))
+	if b.statusBar == 0 {
+		b.statusBar = objc.ClassID("NSStatusBar").Send(objc.Sel("systemStatusBar"))
+	}
 	// Guarded rather than chained: statusItemWithLength: sent to a nil status
 	// bar would return nil too, and the error would then name the wrong object.
-	if b.statusBar != 0 {
+	made := false
+	if b.item == 0 && b.statusBar != 0 {
 		b.item = b.statusBar.Send(objc.Sel("statusItemWithLength:"), nsVariableStatusItemLength)
+		made = true
 	}
 	if err := checkNative(uintptr(b.app), uintptr(b.statusBar), uintptr(b.item), uintptr(b.target)); err != nil {
 		b.setupErr = err
 		return
 	}
-	// statusItemWithLength: hands back an autoreleased reference; retain it so the
-	// NSStatusItem lives for the whole process and can't be freed mid-use.
-	b.item.Send(objc.Sel("retain"))
+	if made {
+		// statusItemWithLength: hands back an autoreleased reference; retain it
+		// so the NSStatusItem lives for the whole process and can't be freed
+		// mid-use. Once, for the item that was just made: retaining the same
+		// item on every run would be a leak in the other direction.
+		b.item.Send(objc.Sel("retain"))
+	}
 	b.apply(b.pending)
 }
 
