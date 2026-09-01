@@ -9,7 +9,7 @@ require (
 
 require github.com/go-mswin/win32 v0.4.0
 
-require github.com/go-widgets/mvvm v0.8.0
+require github.com/go-widgets/mvvm v0.9.0
 
 require (
 	github.com/ebitengine/purego v0.10.2 // indirect
