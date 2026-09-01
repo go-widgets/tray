@@ -28,6 +28,23 @@ type MenuItem struct {
 	Checked   bool
 	Disabled  bool
 	Separator bool
+	// Icon is a small PNG drawn to the left of the label, in the same encoding
+	// as the tray's own icon (see [New]). Nil leaves the row text-only.
+	//
+	// It is PNG bytes rather than an image.Image for the same reason the tray
+	// icon is: a caller ships one artefact that every backend decodes, instead
+	// of each backend agreeing on a pixel layout with the caller.
+	//
+	// A backend scales it to the height its platform draws menu rows at and
+	// keeps the aspect ratio, so an icon does not have to be authored at a
+	// particular size -- extra pixels become resolution, not dimensions. A
+	// monochrome glyph is drawn as a TEMPLATE (see [IsTemplate]) and so follows
+	// a light or dark menu; one that carries colour keeps its colour.
+	//
+	// Honoured today by the macOS backend. The Windows and Linux backends
+	// ignore it, and a row that carries one there simply draws as it did
+	// before -- the field is not a promise those platforms have kept yet.
+	Icon []byte
 	// OnClick is invoked when the item is activated. For a checkbox item the
 	// Checked field is toggled before OnClick runs.
 	OnClick func()
@@ -60,6 +77,11 @@ func Item(label string, onClick func()) *MenuItem {
 
 // Separator is a divider line.
 func Separator() *MenuItem { return &MenuItem{Separator: true} }
+
+// IconItem is a clickable menu item carrying a PNG icon; see [MenuItem.Icon].
+func IconItem(label string, iconPNG []byte, onClick func()) *MenuItem {
+	return &MenuItem{Label: label, Icon: iconPNG, OnClick: onClick}
+}
 
 // Checkbox is a toggleable item; onToggle receives the new checked state.
 func Checkbox(label string, checked bool, onToggle func(bool)) *MenuItem {

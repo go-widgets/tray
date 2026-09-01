@@ -337,7 +337,7 @@ func TestLiveImageIsSizedForTheMenuBar(t *testing.T) {
 	// black glyph is enough, the size is the whole subject.
 	png := tallPNG(t, 36, 36)
 
-	img := nsImageFromPNG(png)
+	img := nsImageFromPNG(png, menuBarPoints)
 	if img == 0 {
 		t.Fatal("nsImageFromPNG returned a nil image for a valid PNG")
 	}
@@ -505,5 +505,157 @@ func TestLiveRunningTwiceKeepsOneItemInTheMenuBar(t *testing.T) {
 	}))
 	if got := b.item.Send(objc.Sel("button")).Send(objc.Sel("image")); got == 0 {
 		t.Error("the reused item has no image; it is in the bar but no longer follows the tray")
+	}
+}
+
+// TestLiveMenuItemImageIsSizedForTheRow is the same measurement as
+// TestLiveImageIsSizedForTheMenuBar, one layout down.
+//
+// A row's icon is laid out around the row's TEXT, not around the 22-point bar,
+// so it gets its own height. And it fails the same silent way: an NSImage built
+// from data reports its pixel count as points, so the 36-pixel PNG the fleet's
+// generator emits would arrive in a menu at 36 points -- more than twice the
+// label beside it -- with every AppKit call answering normally.
+//
+// The size is read back OUT of AppKit, off the NSMenuItem the backend actually
+// built, rather than off the NSImage the test made: that is the difference
+// between "the helper sizes an image" and "the menu on screen carries a sized
+// one".
+func TestLiveMenuItemImageIsSizedForTheRow(t *testing.T) {
+	requireWindowServer(t)
+
+	// 36 pixels, which is what internal/trayicon in godl and the rest of the
+	// fleet emits. The number matters: if it equalled menuItemPoints the test
+	// would pass without anything being resized.
+	if menuItemPoints == 36 {
+		t.Fatal("the probe PNG is 36 pixels and menuItemPoints is 36 too: this test would prove nothing")
+	}
+	glyph := tallPNG(t, 36, 36)
+
+	b := &darwinBackend{}
+	tr := New(nil).WithBackend(b)
+	tr.SetMenu(NewMenu().Add(
+		IconItem("Pause", glyph, func() {}),
+		Item("No icon", func() {}),
+	))
+	if err := b.Attach(tr); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	var (
+		withIcon, withoutIcon objc.ID
+		size                  objc.NSSize
+		isTemplate            bool
+		rows                  int
+	)
+	onMain(t, func() {
+		menu := b.item.Send(objc.Sel("menu"))
+		if menu == 0 {
+			return
+		}
+		rows = int(menu.Send(objc.Sel("numberOfItems")))
+		withIcon = menu.Send(objc.Sel("itemAtIndex:"), 0).Send(objc.Sel("image"))
+		withoutIcon = menu.Send(objc.Sel("itemAtIndex:"), 1).Send(objc.Sel("image"))
+		if withIcon != 0 {
+			size = objc.Send[objc.NSSize](withIcon, objc.Sel("size"))
+			isTemplate = withIcon.Send(objc.Sel("isTemplate")) != 0
+		}
+	})
+
+	t.Logf("rows=%d image=%#x size=%.1fx%.1f template=%v",
+		rows, uintptr(withIcon), size.Width, size.Height, isTemplate)
+
+	if withIcon == 0 {
+		t.Fatal("the row given an Icon carries no NSImage: setImage: was never sent")
+	}
+	if size.Height != menuItemPoints {
+		t.Errorf("the row's image is %.1f points tall, want %d -- a 36-pixel glyph reached "+
+			"the menu at its pixel count", size.Height, menuItemPoints)
+	}
+	if size.Width != menuItemPoints {
+		t.Errorf("a square glyph came back %.1f x %.1f: the aspect ratio was not kept",
+			size.Width, size.Height)
+	}
+	// A monochrome glyph must be a TEMPLATE or it stays black on a dark menu.
+	// tallPNG draws one opaque black pixel, so IsTemplate says yes; this reads
+	// back what AppKit was actually told.
+	if !IsTemplate(glyph) {
+		t.Fatal("the probe glyph is not monochrome; the template check below would measure nothing")
+	}
+	if !isTemplate {
+		t.Error("the row's image is not a template: it will stay black on a dark menu")
+	}
+
+	// The negative control, in two directions. A row given no icon must have no
+	// image -- otherwise "there is an image" says nothing about the field --
+	// and an NSImage built from the same bytes without a setSize: must still
+	// report its pixels, or the sizing above is guarding a behaviour AppKit no
+	// longer has.
+	if withoutIcon != 0 {
+		t.Errorf("a row with no Icon carries image %#x: every row gets one regardless",
+			uintptr(withoutIcon))
+	}
+	var raw objc.NSSize
+	onMain(t, func() {
+		unsized := objc.ClassID("NSImage").Send(objc.Sel("alloc")).
+			Send(objc.Sel("initWithData:"), objc.ClassID("NSData").
+				Send(objc.Sel("dataWithBytes:length:"), unsafe.Pointer(&glyph[0]), uintptr(len(glyph))))
+		raw = objc.Send[objc.NSSize](unsized, objc.Sel("size"))
+	})
+	t.Logf("control: an unsized NSImage of the same bytes reports %.1fx%.1f", raw.Width, raw.Height)
+	if raw.Height != 36 {
+		t.Fatalf("control: an unsized NSImage reported %.1f points, want 36 -- "+
+			"if AppKit no longer does this, the check above is guarding nothing", raw.Height)
+	}
+}
+
+// TestLiveChangingOnlyAnIconRebuildsTheMenu is the signature defect seen from
+// AppKit's side.
+//
+// menuSignature decides whether the platform menu is rebuilt at all. An icon
+// left out of it makes a row whose glyph changes -- play becoming pause, which
+// is what this field is for -- keep the old picture for ever: no error, no
+// warning, the label updates correctly beside it. The test asserts on the image
+// READ BACK from the NSMenuItem, so it fails whether the omission is in the
+// signature or in buildMenu.
+func TestLiveChangingOnlyAnIconRebuildsTheMenu(t *testing.T) {
+	requireWindowServer(t)
+
+	wide := tallPNG(t, 36, 36)  // square
+	tallr := tallPNG(t, 18, 36) // half as wide: the sizes differ measurably
+
+	b := &darwinBackend{}
+	tr := New(nil).WithBackend(b)
+	tr.SetMenu(NewMenu().Add(IconItem("Play", wide, func() {})))
+	if err := b.Attach(tr); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	rowImageSize := func() objc.NSSize {
+		var sz objc.NSSize
+		onMain(t, func() {
+			if img := b.item.Send(objc.Sel("menu")).Send(objc.Sel("itemAtIndex:"), 0).
+				Send(objc.Sel("image")); img != 0 {
+				sz = objc.Send[objc.NSSize](img, objc.Sel("size"))
+			}
+		})
+		return sz
+	}
+
+	first := rowImageSize()
+	if first.Width != menuItemPoints {
+		t.Fatalf("the square glyph came back %.1f wide, want %d", first.Width, menuItemPoints)
+	}
+
+	// ONLY the icon changes. Same label, same everything else.
+	tr.SetMenu(NewMenu().Add(IconItem("Play", tallr, func() {})))
+	second := rowImageSize()
+	t.Logf("row image %.1fx%.1f -> %.1fx%.1f", first.Width, first.Height, second.Width, second.Height)
+
+	want := float64(menuItemPoints) / 2
+	if second.Width != want {
+		t.Errorf("after swapping the glyph the row's image is %.1f wide, want %.1f: "+
+			"the menu was not rebuilt, so the old picture is still on screen",
+			second.Width, want)
 	}
 }
