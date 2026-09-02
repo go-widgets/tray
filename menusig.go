@@ -47,6 +47,15 @@ func writeMenu(h io.Writer, m *Menu) {
 		// hash the same, and two different menus would be called equal.
 		writeStr(h, it.Label)
 		writeStr(h, it.Tooltip)
+		// The icon is DRAWN, so it belongs here. A menu whose only change is a
+		// row's icon -- a media row going from play to pause, which is the
+		// whole reason the field exists -- would otherwise sign the same as
+		// the menu already on screen and never be rebuilt: the label would
+		// update and the glyph would not. That is exactly the silent class
+		// this file exists to prevent, so it is hashed by CONTENT: two
+		// different slices holding the same PNG are the same picture and must
+		// not cost a rebuild.
+		writeBytes(h, it.Icon)
 		_, _ = h.Write([]byte{
 			2,
 			b2b(it.Checked), b2b(it.Disabled), b2b(it.Separator),
@@ -63,6 +72,16 @@ func writeStr(h io.Writer, s string) {
 	binary.LittleEndian.PutUint64(n[:], uint64(len(s)))
 	_, _ = h.Write(n[:])
 	_, _ = h.Write([]byte(s))
+}
+
+// writeBytes hashes a byte field, length first, for the same reason writeStr
+// does: without the length a two-byte icon followed by a one-byte one signs the
+// same as a one followed by a two.
+func writeBytes(h io.Writer, b []byte) {
+	var n [8]byte
+	binary.LittleEndian.PutUint64(n[:], uint64(len(b)))
+	_, _ = h.Write(n[:])
+	_, _ = h.Write(b)
 }
 
 func b2b(v bool) byte {

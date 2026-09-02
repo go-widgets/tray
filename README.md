@@ -16,6 +16,8 @@ interface — all `CGO_ENABLED=0`:
 ```go
 menu := tray.NewMenu().Add(
     tray.Item("Open", func() { open() }),
+    tray.IconItem("Pause", pausePNG, func() { pause() }), // a glyph beside the label
+
     tray.Checkbox("Notifications", true, func(on bool) { setNotify(on) }),
     tray.SubMenu("Recent", tray.NewMenu().Add(tray.Item("file.txt", nil))),
     tray.Separator(),
@@ -39,7 +41,8 @@ t.Run() // blocks on the platform event loop until Quit
     leaves the menu bar when the program stops and comes back when it starts,
     and clicking it opens its menu.
   - **windows** / **linux** — implemented and compile-verified; runtime
-    confirmation pending.
+    confirmation pending. They ignore `MenuItem.Icon`: a row carrying one draws
+    as it did before, which is a gap, not a promise kept.
   - anything else — `defaultBackend` is nil and `Run` reports `ErrNoBackend`,
     which is the difference between "there is no tray here" and "your tray
     silently does nothing".

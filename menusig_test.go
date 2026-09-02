@@ -43,6 +43,13 @@ func TestMenuSignatureSeesWhatIsDrawn(t *testing.T) {
 		{"a submenu disappearing", func(m *Menu) { m.Items[3].Submenu = nil }, true},
 		{"one more item", func(m *Menu) { m.Add(Item("Extra", nil)) }, true},
 
+		// The icon is drawn, so changing it must rebuild. Without this a media
+		// row going from play to pause -- the case MenuItem.Icon was added for
+		// -- keeps the old glyph for ever while its label updates around it,
+		// and nothing anywhere reports a failure.
+		{"an icon appearing", func(m *Menu) { m.Items[2].Icon = []byte("play") }, true},
+		{"an icon inside a submenu", func(m *Menu) { m.Items[3].Submenu.Items[0].Icon = []byte("x") }, true},
+
 		// The handler is not drawn. Comparing function values is impossible
 		// anyway, and the click table is rebuilt on every refresh regardless.
 		{"the click handler", func(m *Menu) { m.Items[2].OnClick = func() { panic("x") } }, false},
@@ -55,6 +62,42 @@ func TestMenuSignatureSeesWhatIsDrawn(t *testing.T) {
 				t.Errorf("changing %s: signatures differ = %v, want %v", tc.name, differ, tc.differ)
 			}
 		})
+	}
+}
+
+// The icon is hashed by CONTENT, not by slice identity: a caller that rebuilds
+// its menu from scratch every tick hands over a fresh []byte holding the same
+// PNG each time, and calling that a change would rebuild the platform menu
+// several times a second -- replacing it under a user who has it open, which is
+// the cost this signature exists to avoid.
+func TestMenuSignatureComparesIconContentNotIdentity(t *testing.T) {
+	glyph := func() []byte { return []byte{0x89, 'P', 'N', 'G', 1, 2, 3} }
+	a := NewMenu().Add(IconItem("Pause", glyph(), nil))
+	b := NewMenu().Add(IconItem("Pause", glyph(), nil))
+	if menuSignature(a) != menuSignature(b) {
+		t.Error("two equal icons signed differently: every refresh would rebuild the menu")
+	}
+
+	c := NewMenu().Add(IconItem("Pause", []byte{0x89, 'P', 'N', 'G', 1, 2, 4}, nil))
+	if menuSignature(a) == menuSignature(c) {
+		t.Error("two different icons signed the same: the changed glyph would never be drawn")
+	}
+
+	// And an icon is not the same as no icon, which is the transition a row
+	// makes the first time it is given one.
+	if menuSignature(a) == menuSignature(NewMenu().Add(Item("Pause", nil))) {
+		t.Error("a row with an icon signed the same as the same row without one")
+	}
+}
+
+// Lengths go with the icon bytes too. Without the length these two menus --
+// which draw different glyphs on different rows -- would concatenate to the
+// same bytes and be called equal.
+func TestMenuSignatureIsNotFooledByRunTogetherIcons(t *testing.T) {
+	a := NewMenu().Add(IconItem("x", []byte{1, 2}, nil), IconItem("y", []byte{3}, nil))
+	b := NewMenu().Add(IconItem("x", []byte{1}, nil), IconItem("y", []byte{2, 3}, nil))
+	if menuSignature(a) == menuSignature(b) {
+		t.Error("icons [1,2]+[3] and [1]+[2,3] hash the same: a changed menu would never be redrawn")
 	}
 }
 
