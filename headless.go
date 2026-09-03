@@ -10,6 +10,7 @@ type Headless struct {
 	Started   bool
 	Refreshes int
 	LastIcon  []byte
+	LastTitle string
 	LastTip   string
 	LastMenu  *Menu
 
@@ -63,5 +64,5 @@ func (h *Headless) Snapshot() (icon []byte, tip string, menu *Menu) {
 }
 
 func (h *Headless) snapshot(t *Tray) {
-	h.LastIcon, h.LastTip, h.LastMenu = t.Icon(), t.Tooltip(), t.Menu()
+	h.LastIcon, h.LastTitle, h.LastTip, h.LastMenu = t.Icon(), t.Title(), t.Tooltip(), t.Menu()
 }

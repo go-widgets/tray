@@ -115,6 +115,15 @@ type darwinBackend struct {
 	// icon-only refresh does not rebuild it. Written and read on the main
 	// thread only, like the rest of the AppKit state above.
 	lastMenuSig string
+	// lastTitle is the button's title as of the last refresh, so a refresh
+	// that hasn't changed it skips re-sending setTitle:. Measured: without
+	// this guard, TestLiveRefreshingTheIconDoesNotGrowTheProcess's 8000
+	// icon-only refreshes went from 68s to timing out past 60s — setting a
+	// REAL NSStatusBarButton's title, unlike its image, appears to force
+	// actual menu-bar layout/window-server work even when the string is
+	// unchanged. An icon that animates several times a second while the
+	// title stays put must not pay that on every frame.
+	lastTitle string
 }
 
 func newNativeBackend() Backend { return &darwinBackend{} }
@@ -363,6 +372,15 @@ func (b *darwinBackend) apply(t *Tray) {
 	}
 	if tip := t.Tooltip(); tip != "" {
 		button.Send(objc.Sel("setToolTip:"), objc.NSString(tip))
+	}
+	// Guarded by lastTitle (see its own doc comment) rather than sent
+	// unconditionally like setImage: — but still sent whenever the title
+	// actually differs, INCLUDING going back to "" (an account removed, a
+	// metric that stopped applying), so the button never keeps showing a
+	// stale title next to a now-unrelated icon.
+	if title := t.Title(); title != b.lastTitle {
+		button.Send(objc.Sel("setTitle:"), objc.NSString(title))
+		b.lastTitle = title
 	}
 	// The click-dispatch table is the shared, unit-tested leafItems() order; the
 	// per-item tags assigned in buildMenu index straight into it. It is rebuilt

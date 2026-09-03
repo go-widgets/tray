@@ -149,6 +149,7 @@ type Backend interface {
 type Tray struct {
 	mu      sync.RWMutex
 	icon    []byte // PNG bytes
+	title   string
 	tooltip string
 	menu    *Menu
 	backend Backend
@@ -184,6 +185,25 @@ func (t *Tray) SetIcon(iconPNG []byte) *Tray {
 	return t
 }
 
+// SetTitle sets text drawn directly in the menu bar alongside (or instead
+// of) the icon — the way a system meter shows "42%" rather than only a
+// glyph — and refreshes if running. An empty title leaves only the icon,
+// which is also SetTitle's zero-value behavior on a Tray nobody has called
+// it on.
+//
+// Honoured today by the macOS backend, which owns real screen space for it
+// (the button holds both an image and a title). The Windows and Linux
+// backends ignore it, the same partial-platform-support shape
+// [MenuItem.Icon] already has: a caller on those platforms simply sees
+// what it drew before, not an error.
+func (t *Tray) SetTitle(s string) *Tray {
+	t.mu.Lock()
+	t.title = s
+	t.mu.Unlock()
+	t.refresh()
+	return t
+}
+
 // SetMenu sets the tray menu and refreshes if running.
 func (t *Tray) SetMenu(m *Menu) *Tray {
 	t.mu.Lock()
@@ -202,6 +222,12 @@ func (t *Tray) Icon() []byte {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.icon
+}
+
+func (t *Tray) Title() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.title
 }
 
 func (t *Tray) Tooltip() string {

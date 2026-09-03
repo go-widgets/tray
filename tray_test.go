@@ -69,8 +69,8 @@ func TestTrayLifecycle(t *testing.T) {
 	ready := false
 	tr := New([]byte("PNG")).WithBackend(h).OnReady(func() { ready = true })
 	// mutations before Run refresh the backend
-	tr.SetTooltip("hi").SetIcon([]byte("PNG2")).SetMenu(NewMenu().Add(Item("Q", nil)))
-	if h.Refreshes != 3 {
+	tr.SetTooltip("hi").SetIcon([]byte("PNG2")).SetMenu(NewMenu().Add(Item("Q", nil))).SetTitle("6%")
+	if h.Refreshes != 4 {
 		t.Errorf("refreshes = %d", h.Refreshes)
 	}
 	// OnReady fires during Run; quitting from it lets Run return
@@ -81,11 +81,11 @@ func TestTrayLifecycle(t *testing.T) {
 	if !ready || !h.Started {
 		t.Error("tray did not start / ready")
 	}
-	if string(h.LastIcon) != "PNG2" || h.LastTip != "hi" || h.LastMenu.Items[0].Label != "Q" {
-		t.Errorf("snapshot = %q %q %v", h.LastIcon, h.LastTip, h.LastMenu)
+	if string(h.LastIcon) != "PNG2" || h.LastTitle != "6%" || h.LastTip != "hi" || h.LastMenu.Items[0].Label != "Q" {
+		t.Errorf("snapshot = %q %q %q %v", h.LastIcon, h.LastTitle, h.LastTip, h.LastMenu)
 	}
 	// accessors
-	if string(tr.Icon()) != "PNG2" || tr.Tooltip() != "hi" || tr.Menu() == nil {
+	if string(tr.Icon()) != "PNG2" || tr.Title() != "6%" || tr.Tooltip() != "hi" || tr.Menu() == nil {
 		t.Error("accessors")
 	}
 	// Quit is idempotent
