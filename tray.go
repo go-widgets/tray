@@ -290,6 +290,38 @@ func (t *Tray) Quit() {
 	}
 }
 
+// remover is the optional Backend capability to take THIS ONE item out of
+// the bar without stopping the shared platform loop any other Attached (or
+// the Holding) Tray depends on — the counterpart Close needs to Quit's
+// whole-loop behavior. A backend without finer-grained removal (Headless;
+// Windows and Linux today) simply doesn't implement it, and Close falls
+// back to Quit — the same partial-platform-support shape [MenuItem.Icon]
+// and [Tray.SetTitle] already have.
+type remover interface {
+	Remove(t *Tray)
+}
+
+// Close removes this tray's item from the menu bar, for a Tray that was
+// Attached (not Run) and whose life ends before the process's own — e.g.
+// one of several per-account items in a host that keeps running after one
+// account is removed. Unlike Quit, it does not stop the platform loop: a
+// caller with several Attached items (and one Holding the loop) can Close
+// any of the Attached ones without taking the others down.
+//
+// On a backend with no such capability, Close falls back to Quit, which is
+// at least as safe as doing nothing when there is only one item running the
+// whole loop by itself.
+func (t *Tray) Close() {
+	if t.backend == nil {
+		return
+	}
+	if r, ok := t.backend.(remover); ok {
+		r.Remove(t)
+		return
+	}
+	t.backend.Quit()
+}
+
 func (t *Tray) refresh() {
 	if t.backend != nil {
 		t.backend.Refresh(t)

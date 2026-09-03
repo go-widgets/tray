@@ -2,6 +2,7 @@ package tray
 
 import (
 	"testing"
+	"time"
 )
 
 func TestMenuBuildersAndFind(t *testing.T) {
@@ -123,3 +124,41 @@ type fakeAttachBackend struct {
 	Headless
 	attached int
 }
+
+func TestTrayClose(t *testing.T) {
+	// backend without removal support (Headless) → Close falls back to Quit.
+	h := NewHeadless()
+	tr := New([]byte("PNG")).WithBackend(h)
+	done := make(chan error, 1)
+	go func() { done <- tr.Run() }()
+	tr.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run after Close (fallback to Quit) = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not fall back to Quit: Run never returned")
+	}
+
+	// backend with removal support → delegates to Remove, does NOT touch Quit.
+	fb := &fakeRemoverBackend{Headless: *NewHeadless()}
+	tr2 := New([]byte("PNG")).WithBackend(fb)
+	tr2.Close()
+	if fb.removed != 1 {
+		t.Fatalf("removed = %d, want 1", fb.removed)
+	}
+	if fb.closed {
+		t.Fatal("Close on a remover backend must not fall back to Quit")
+	}
+
+	// nil backend → no panic.
+	New([]byte("PNG")).WithBackend(nil).Close()
+}
+
+type fakeRemoverBackend struct {
+	Headless
+	removed int
+}
+
+func (f *fakeRemoverBackend) Remove(*Tray) { f.removed++ }

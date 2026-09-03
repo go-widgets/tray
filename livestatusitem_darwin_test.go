@@ -319,6 +319,50 @@ func TestLiveTwoBackendsEachGetTheirOwnTargetClass(t *testing.T) {
 	}
 }
 
+// TestLiveCloseRemovesOnlyItsOwnItem is Remove's whole reason to exist: two
+// Attached items sharing the one platform loop, and Closing one must take
+// ONLY that one out of the bar — never call Quit, which would stop the loop
+// the other item (and whichever Tray is Holding it) still depends on.
+func TestLiveCloseRemovesOnlyItsOwnItem(t *testing.T) {
+	requireWindowServer(t)
+
+	a, c := &darwinBackend{}, &darwinBackend{}
+	trA := New(nil).WithBackend(a).SetTooltip("a")
+	trC := New(nil).WithBackend(c).SetTooltip("c")
+	for _, tr := range []*Tray{trA, trC} {
+		if err := tr.Attach(); err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+	}
+
+	var windowBefore, itemAAfterClose, windowCAfterClose objc.ID
+	onMain(t, func() {
+		windowBefore = c.item.Send(objc.Sel("button")).Send(objc.Sel("window"))
+	})
+	if windowBefore == 0 {
+		t.Fatal("c's item has no window before Close: test setup did not place it")
+	}
+
+	trA.Close()
+
+	onMain(t, func() {
+		itemAAfterClose = a.item
+		windowCAfterClose = c.item.Send(objc.Sel("button")).Send(objc.Sel("window"))
+	})
+	if itemAAfterClose != 0 {
+		t.Errorf("a.item = %#x after Close, want 0 (removed and cleared)", uintptr(itemAAfterClose))
+	}
+	// The proof that matters: c is STILL a real, placed item — Close on a's
+	// backend did not stop the shared loop c's own item is placed on.
+	if windowCAfterClose == 0 {
+		t.Error("c's item lost its window after a.Close(): Close reached the shared loop, not just a's own item")
+	}
+
+	// Cleanup: c is still alive and would otherwise leave a real item in the
+	// menu bar for the rest of this test binary's life.
+	c.Remove(trC)
+}
+
 // TestLiveImageIsSizedForTheMenuBar reads the NSImage's size back out of AppKit.
 //
 // The defect it guards is quiet in the same way as the nil application: the icon

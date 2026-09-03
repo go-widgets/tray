@@ -238,6 +238,12 @@ func (b *darwinBackend) prepare(t *Tray) error {
 						objc.AutoreleasePool(func() { b.apply(b.pending) })
 					},
 				},
+				{
+					Cmd: objc.Sel("goTrayRemove:"),
+					Fn: func(self objc.ID, _cmd objc.SEL, _ objc.ID) {
+						b.removeOnMain()
+					},
+				},
 			},
 		)
 		if err != nil {
@@ -465,4 +471,27 @@ func (b *darwinBackend) Quit() {
 	// And WAKE the wait, or the question is not asked until an event happens to
 	// arrive -- which, in a program nobody is touching, is never.
 	objc.WakeMainRunLoop()
+}
+
+// Remove implements the remover Backend capability (see [Tray.Close]):
+// takes this ONE item out of the bar via -[NSStatusBar removeStatusItem:],
+// WITHOUT touching objc.App()'s shared run loop the way Quit does — Quit
+// would wrongly stop every OTHER attached item (and whichever Tray is
+// Holding the loop) along with this one, which is exactly the failure mode
+// a Tray whose life is shorter than the process's own (one of several
+// per-account items) needs to not have.
+func (b *darwinBackend) Remove(t *Tray) {
+	b.pending = t
+	b.runOnMain(objc.Sel("goTrayRemove:"))
+}
+
+// removeOnMain does the actual removal, on the main thread (AppKit
+// requirement, like every other AppKit call in this file).
+func (b *darwinBackend) removeOnMain() {
+	if b.item == 0 || b.statusBar == 0 {
+		return
+	}
+	b.statusBar.Send(objc.Sel("removeStatusItem:"), b.item)
+	b.item.Send(objc.Sel("release"))
+	b.item = 0
 }
