@@ -69,11 +69,21 @@ func TestTrayLifecycle(t *testing.T) {
 	h := NewHeadless()
 	ready := false
 	tr := New([]byte("PNG")).WithBackend(h).OnReady(func() { ready = true })
+	if !tr.Visible() {
+		t.Fatal("a fresh Tray must start visible")
+	}
 	// mutations before Run refresh the backend
-	tr.SetTooltip("hi").SetIcon([]byte("PNG2")).SetMenu(NewMenu().Add(Item("Q", nil))).SetTitle("6%")
-	if h.Refreshes != 4 {
+	tr.SetTooltip("hi").SetIcon([]byte("PNG2")).SetMenu(NewMenu().Add(Item("Q", nil))).SetTitle("6%").SetVisible(false)
+	if h.Refreshes != 5 {
 		t.Errorf("refreshes = %d", h.Refreshes)
 	}
+	if h.LastVisible {
+		t.Error("SetVisible(false) did not reach the backend")
+	}
+	if tr.Visible() {
+		t.Error("Visible() did not reflect SetVisible(false)")
+	}
+	tr.SetVisible(true)
 	// OnReady fires during Run; quitting from it lets Run return
 	tr.OnReady(func() { ready = true; tr.Quit() })
 	if err := tr.Run(); err != nil {
