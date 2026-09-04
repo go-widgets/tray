@@ -6,9 +6,9 @@ import "sync"
 // state applied to it and blocks Run until Quit, so a tray can be exercised
 // end-to-end without a real desktop session.
 type Headless struct {
-	mu        sync.Mutex
-	Started   bool
-	Refreshes int
+	mu          sync.Mutex
+	Started     bool
+	Refreshes   int
 	LastIcon    []byte
 	LastTitle   string
 	LastTip     string
