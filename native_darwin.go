@@ -124,6 +124,12 @@ type darwinBackend struct {
 	// unchanged. An icon that animates several times a second while the
 	// title stays put must not pay that on every frame.
 	lastTitle string
+	// lastVisible mirrors lastTitle's own guard, for setVisible: — starts
+	// false (Go's zero value) while a Tray defaults to visible (see
+	// Tray.visible's own zero value), so the very first apply() always
+	// sends one real setVisible:true; every one after that is skipped
+	// unless Tray.Visible() actually changed.
+	lastVisible bool
 }
 
 func newNativeBackend() Backend { return &darwinBackend{} }
@@ -388,6 +394,14 @@ func (b *darwinBackend) apply(t *Tray) {
 		button.Send(objc.Sel("setTitle:"), objc.NSString(title))
 		b.lastTitle = title
 	}
+	// setVisible: (not setHidden: on the button — this hides the whole
+	// NSStatusItem, button included) is sent to the ITEM, guarded by
+	// lastVisible for the same reason lastTitle is: see that field's own
+	// doc comment.
+	if visible := t.Visible(); visible != b.lastVisible {
+		b.item.Send(objc.Sel("setVisible:"), visible)
+		b.lastVisible = visible
+	}
 	// The click-dispatch table is the shared, unit-tested leafItems() order; the
 	// per-item tags assigned in buildMenu index straight into it. It is rebuilt
 	// every time because it is cheap and it carries the CURRENT handlers, which
@@ -422,8 +436,19 @@ func (b *darwinBackend) buildMenu(m *Menu) objc.ID {
 			menu.Send(objc.Sel("addItem:"), objc.ClassID("NSMenuItem").Send(objc.Sel("separatorItem")))
 			continue
 		}
+		// The key equivalent goes in at INIT, with its modifier mask set after:
+		// AppKit draws it right-aligned in a column with every other row's, in
+		// the platform's own glyphs, which is the whole reason a caller gives a
+		// character rather than a rendered string.
+		//
+		// A modifier mask alone, with no character, is not a key equivalent: the
+		// mask is ignored and nothing is drawn. So the mask is only set when
+		// there is a key to wear it.
 		mi := objc.ClassID("NSMenuItem").Send(objc.Sel("alloc")).Send(objc.Sel("initWithTitle:action:keyEquivalent:"),
-			objc.NSString(it.Label), objc.Sel("handle:"), objc.NSString(""))
+			objc.NSString(it.Label), objc.Sel("handle:"), objc.NSString(it.Key))
+		if it.Key != "" {
+			mi.Send(objc.Sel("setKeyEquivalentModifierMask:"), nsModifierMask(it.Mods))
+		}
 		if img := nsImageFromPNG(it.Icon, menuItemPoints); img != 0 {
 			mi.Send(objc.Sel("setImage:"), img)
 			// setImage: retains, so the reference alloc gave us is ours to
@@ -494,4 +519,33 @@ func (b *darwinBackend) removeOnMain() {
 	b.statusBar.Send(objc.Sel("removeStatusItem:"), b.item)
 	b.item.Send(objc.Sel("release"))
 	b.item = 0
+}
+
+// nsModifierMask turns the package's modifier flags into AppKit's.
+//
+// NSEventModifierFlags are a bit field with a gap in it -- shift at 17, control
+// at 18, option at 19, command at 20 -- so this is a translation and not a
+// cast. Getting it wrong draws the wrong glyphs beside the key, which is a
+// menu telling a person to press something that does nothing.
+func nsModifierMask(m Mods) uintptr {
+	const (
+		nsShift   = 1 << 17
+		nsControl = 1 << 18
+		nsOption  = 1 << 19
+		nsCommand = 1 << 20
+	)
+	var out uintptr
+	if m&ModShift != 0 {
+		out |= nsShift
+	}
+	if m&ModControl != 0 {
+		out |= nsControl
+	}
+	if m&ModOption != 0 {
+		out |= nsOption
+	}
+	if m&ModCommand != 0 {
+		out |= nsCommand
+	}
+	return out
 }

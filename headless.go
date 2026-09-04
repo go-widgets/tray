@@ -6,13 +6,14 @@ import "sync"
 // state applied to it and blocks Run until Quit, so a tray can be exercised
 // end-to-end without a real desktop session.
 type Headless struct {
-	mu        sync.Mutex
-	Started   bool
-	Refreshes int
-	LastIcon  []byte
-	LastTitle string
-	LastTip   string
-	LastMenu  *Menu
+	mu          sync.Mutex
+	Started     bool
+	Refreshes   int
+	LastIcon    []byte
+	LastTitle   string
+	LastTip     string
+	LastMenu    *Menu
+	LastVisible bool
 
 	quit   chan struct{}
 	closed bool
@@ -65,4 +66,5 @@ func (h *Headless) Snapshot() (icon []byte, tip string, menu *Menu) {
 
 func (h *Headless) snapshot(t *Tray) {
 	h.LastIcon, h.LastTitle, h.LastTip, h.LastMenu = t.Icon(), t.Title(), t.Tooltip(), t.Menu()
+	h.LastVisible = t.Visible()
 }

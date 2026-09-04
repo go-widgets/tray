@@ -45,6 +45,26 @@ type MenuItem struct {
 	// ignore it, and a row that carries one there simply draws as it did
 	// before -- the field is not a promise those platforms have kept yet.
 	Icon []byte
+	// Key is the row's key equivalent -- the ONE CHARACTER the platform draws
+	// at the right of the row, aligned in a column with every other row's.
+	//
+	// A character and not a name: "s" for S, "=" for the equals key. The keys
+	// with no character of their own have constants -- [KeyUp], [KeyDown],
+	// [KeyLeft], [KeyRight], [KeyReturn], [KeyEscape], [KeyDelete] -- because a
+	// menu draws an arrow there, not the word "Up".
+	//
+	// ⚠ IT IS DRAWN, AND ON macOS IT IS ALSO BOUND, but only where a menu's key
+	// equivalents are ever consulted: the main menu, and a menu while it is
+	// open. A tray menu is neither for as long as it is shut, so for a status
+	// item this is display. An application that also owns a main menu should
+	// expect the combination to work there too.
+	//
+	// Honoured today by the macOS backend. The Windows and Linux backends ignore
+	// it, and a row that carries one there draws as it did before.
+	Key string
+	// Mods are the modifiers shown with [MenuItem.Key]. Zero draws the character
+	// alone, which is what a bare key equivalent looks like.
+	Mods Mods
 	// OnClick is invoked when the item is activated. For a checkbox item the
 	// Checked field is toggled before OnClick runs.
 	OnClick func()
@@ -152,14 +172,16 @@ type Tray struct {
 	title   string
 	tooltip string
 	menu    *Menu
+	visible bool
 	backend Backend
 	onReady func()
 }
 
 // New creates a tray showing iconPNG (PNG-encoded bytes). The platform backend
-// is selected automatically; use WithBackend to override (eg. for tests).
+// is selected automatically; use WithBackend to override (eg. for tests). It
+// starts visible — see SetVisible.
 func New(iconPNG []byte) *Tray {
-	return &Tray{icon: iconPNG, menu: NewMenu(), backend: defaultBackend()}
+	return &Tray{icon: iconPNG, menu: NewMenu(), visible: true, backend: defaultBackend()}
 }
 
 // WithBackend overrides the platform backend and returns the tray.
@@ -204,6 +226,21 @@ func (t *Tray) SetTitle(s string) *Tray {
 	return t
 }
 
+// SetVisible shows or hides the tray's own icon without releasing the
+// platform loop it may be Holding for other items Attached to it (e.g.
+// go-aiquota/tray/menubar's control item, whose Hold is what every
+// per-account item's Attach joins — closing or not-Run-ning it would take
+// the whole loop down with it, which hiding does not). Honoured today by
+// the macOS backend (NSStatusItem.visible); other backends ignore it, the
+// same partial-platform-support shape SetTitle already has.
+func (t *Tray) SetVisible(v bool) *Tray {
+	t.mu.Lock()
+	t.visible = v
+	t.mu.Unlock()
+	t.refresh()
+	return t
+}
+
 // SetMenu sets the tray menu and refreshes if running.
 func (t *Tray) SetMenu(m *Menu) *Tray {
 	t.mu.Lock()
@@ -240,6 +277,12 @@ func (t *Tray) Menu() *Menu {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.menu
+}
+
+func (t *Tray) Visible() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.visible
 }
 
 // ready is called by a backend once its event loop is live.
