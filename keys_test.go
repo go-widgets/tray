@@ -86,3 +86,39 @@ func TestTheGlyphKeysAreTheValuesAppKitExpects(t *testing.T) {
 		}
 	}
 }
+
+// TestTheFunctionKeysAreDistinctAndInOrder.
+//
+// ⛔ A WRONG CODE HERE IS SILENT. A key equivalent AppKit does not recognise
+// draws nothing -- exactly what an unbound row draws -- so a transposed digit
+// would show up as "the shortcut is missing from the menu again" and nothing
+// else. The block is consecutive from NSF1FunctionKey, which is checkable.
+func TestTheFunctionKeysAreDistinctAndInOrder(t *testing.T) {
+	fkeys := []string{
+		KeyF1, KeyF2, KeyF3, KeyF4, KeyF5, KeyF6, KeyF7, KeyF8,
+		KeyF9, KeyF10, KeyF11, KeyF12, KeyF13, KeyF14, KeyF15,
+	}
+	const nsF1 = 0xF704
+	for i, k := range fkeys {
+		r := []rune(k)
+		if len(r) != 1 {
+			t.Fatalf("F%d is %q, which is not one character", i+1, k)
+		}
+		if want := rune(nsF1 + i); r[0] != want {
+			t.Errorf("F%d is %#04x, want %#04x", i+1, r[0], want)
+		}
+	}
+	// And none of them collides with a key that already had a meaning: the
+	// arrows live in the same private-use block, four codes below F1.
+	seen := map[string]string{
+		KeyUp: "Up", KeyDown: "Down", KeyLeft: "Left", KeyRight: "Right",
+		KeyReturn: "Return", KeyEscape: "Escape", KeyDelete: "Delete",
+		KeyForwardDelete: "ForwardDelete", KeyTab: "Tab", KeySpace: "Space",
+	}
+	for i, k := range fkeys {
+		if was, ok := seen[k]; ok {
+			t.Errorf("F%d has the same code as %s", i+1, was)
+		}
+		seen[k] = "F" + string(rune('0'+i))
+	}
+}

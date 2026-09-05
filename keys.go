@@ -47,6 +47,32 @@ const (
 	KeyForwardDelete = "\x7f"
 	KeyTab           = "\t"
 	KeySpace         = " "
+
+	// The function keys, which a menu draws as "F3" rather than as a glyph.
+	//
+	// ⛔ THEY HAVE NO CHARACTER OF THEIR OWN, and a row bound to one draws
+	// NOTHING without these -- silently, because an empty key equivalent is
+	// also what a row nothing was granted for has. Found when two menu rows
+	// moved onto F3 and F4 and their shortcuts vanished from the menu, with
+	// no error anywhere: the reader is simply told less than before.
+	//
+	// The codes are AppKit's own, NSF1FunctionKey upwards, in the same
+	// private-use block as the arrows above.
+	KeyF1  = ""
+	KeyF2  = ""
+	KeyF3  = ""
+	KeyF4  = ""
+	KeyF5  = ""
+	KeyF6  = ""
+	KeyF7  = ""
+	KeyF8  = ""
+	KeyF9  = ""
+	KeyF10 = ""
+	KeyF11 = ""
+	KeyF12 = ""
+	KeyF13 = ""
+	KeyF14 = ""
+	KeyF15 = ""
 )
 
 // KeyItem is a clickable menu item with an icon and a key equivalent.
