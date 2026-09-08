@@ -448,6 +448,33 @@ func (b *darwinBackend) buildMenu(m *Menu) objc.ID {
 			objc.NSString(it.Label), objc.Sel("handle:"), objc.NSString(it.Key))
 		if it.Key != "" {
 			mi.Send(objc.Sel("setKeyEquivalentModifierMask:"), nsModifierMask(it.Mods))
+			// ⛔⛔ AND APPKIT IS TOLD NOT TO TRANSLATE IT A SECOND TIME. Since
+			// macOS 12 an NSMenuItem re-maps its key equivalent for the viewer's
+			// keyboard by default -- a kindness meant for applications that
+			// hard-code American characters in a nib, and a corruption for a
+			// caller that has already asked the LIVE layout what the key prints.
+			//
+			// Measured, on a French keyboard: go-xrkit/desk binds the two keys
+			// after P, asks macOS what they print, and correctly gets "^" and
+			// "$". AppKit then read those characters against the ASCII layout,
+			// where "^" is shift-6 and "$" is shift-4, and drew the menu rows as
+			// ⌃⌥⌘6 and ⌃⌥⌘4 -- two digits that are not on those keys at all.
+			// Reported in exactly those words: "je croyais que les raccourci ...
+			// etaient sur ctrl+option+cmd+^ et ctrl+option+cmd+$, pourquoi dans
+			// le menu ca me le place sur ctrl+option+cmd+4 et ctrl+option+cmd+6".
+			//
+			// ⭐ SO THE CONTRACT IS THE ONE THIS PACKAGE ALREADY DOCUMENTS: the
+			// caller gives the character, AppKit draws it in the platform's own
+			// glyphs at the platform's own spacing. Drawing it is the service;
+			// choosing it is not.
+			//
+			// Guarded, because the selector is macOS 12 and this package still
+			// builds against older ones, where nothing localises anything and
+			// there is nothing to switch off.
+			const noRelocalise = "setAllowsAutomaticKeyEquivalentLocalization:"
+			if objc.Send[bool](mi, objc.Sel("respondsToSelector:"), objc.Sel(noRelocalise)) {
+				mi.Send(objc.Sel(noRelocalise), false)
+			}
 		}
 		if img := nsImageFromPNG(it.Icon, menuItemPoints); img != 0 {
 			mi.Send(objc.Sel("setImage:"), img)
