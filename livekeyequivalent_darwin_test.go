@@ -47,6 +47,7 @@ func TestLiveMenuItemCarriesItsKeyEquivalent(t *testing.T) {
 		keys          []string
 		masks         []uint64
 		labels        []string
+		localises     []bool
 		gotWindowless bool
 	)
 	onMain(t, func() {
@@ -61,6 +62,8 @@ func TestLiveMenuItemCarriesItsKeyEquivalent(t *testing.T) {
 			keys = append(keys, objc.Stringify(mi.Send(objc.Sel("keyEquivalent"))))
 			masks = append(masks, uint64(mi.Send(objc.Sel("keyEquivalentModifierMask"))))
 			labels = append(labels, objc.Stringify(mi.Send(objc.Sel("title"))))
+			localises = append(localises, objc.Send[bool](mi,
+				objc.Sel("allowsAutomaticKeyEquivalentLocalization")))
 		}
 	})
 	if gotWindowless {
@@ -116,6 +119,23 @@ func TestLiveMenuItemCarriesItsKeyEquivalent(t *testing.T) {
 	// the platform, not appended to it by us.
 	if labels[0] != "Settings..." {
 		t.Errorf("the first row's title is %q", labels[0])
+	}
+
+	// ⛔⛔ AND APPKIT DOES NOT TRANSLATE THE CHARACTER A SECOND TIME. Since
+	// macOS 12 a menu item re-maps its key equivalent for the viewer's keyboard
+	// by default, which is right for an application that hard-coded American
+	// characters in a nib and wrong for a caller that asked the live layout what
+	// the key prints. Measured on a French keyboard: "^" and "$", correctly read
+	// off the two keys after P, were drawn as 6 and 4 -- their ASCII-layout
+	// shift-digits, which are not on those keys at all.
+	//
+	// Only rows that HAVE a key are switched, so a row with none keeps whatever
+	// AppKit gives a fresh item; and on macOS before 12 the selector does not
+	// exist, where there is nothing to switch off and nothing to assert.
+	if len(localises) == 3 && localises[0] {
+		t.Error("the first row still allows automatic key-equivalent " +
+			"localisation: AppKit will re-map the character this package was " +
+			"given, and draw a key that is not the one bound")
 	}
 }
 
