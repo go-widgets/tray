@@ -134,6 +134,11 @@ func (it *MenuItem) Activate() {
 
 // Find returns the item at the given path of indices (descending into
 // submenus), or nil if the path is invalid.
+//
+// ⛔ IT ADDRESSES BY POSITION, which is the fragile way: a path still resolves
+// after a row is inserted above it or grouped below it, to the WRONG item, and
+// it does so silently. Prefer [Menu.ByLabel] wherever the caller knows what the
+// row says.
 func (m *Menu) Find(path ...int) *MenuItem {
 	cur := m
 	var item *MenuItem
@@ -369,4 +374,43 @@ func (t *Tray) refresh() {
 	if t.backend != nil {
 		t.backend.Refresh(t)
 	}
+}
+
+// All is every item in the menu — separators and submenu parents included — in
+// the order somebody reading it top to bottom, opening each submenu as they
+// reach it, would meet them.
+//
+// ⛔⛔ A MENU IS A TREE AND CALLERS KEPT TREATING IT AS A LIST. Before submenus
+// existed, Items was both the shape of the menu and everything in it; the day a
+// caller grouped rows, every walk that stopped at Items reported the grouped
+// ones missing — a count of key equivalents collapsed, a test said an action
+// was in no row, and none of it was true. The backends here have walked the
+// tree from the start (see walkItems); this is the same walk, offered instead
+// of re-invented per caller.
+func (m *Menu) All() []*MenuItem { return walkItems(m) }
+
+// Leaves is every item somebody can actually choose: separators dropped and
+// submenus walked into. It is what to count, or search, when the question is
+// "what does this menu offer".
+func (m *Menu) Leaves() []*MenuItem { return leafItems(m) }
+
+// ByLabel is the first item whose label is exactly this, submenus included, or
+// nil.
+//
+// ⭐ BY WHAT IT SAYS, NOT BY WHERE IT SITS. Addressing an item by its index into
+// Items breaks the moment anything is inserted above it or grouped below it,
+// and it breaks SILENTLY: the index still resolves, to the wrong row. A label is
+// what the person reading the menu sees, so a caller that asks for one and gets
+// nothing has asked about a row that is not there — which is a fault worth
+// hearing about rather than a wrong answer.
+//
+// Labels are not required to be unique and this returns the first match; a
+// caller that needs to tell two apart wants [Menu.All] and its own test.
+func (m *Menu) ByLabel(label string) *MenuItem {
+	for _, it := range walkItems(m) {
+		if it.Label == label {
+			return it
+		}
+	}
+	return nil
 }

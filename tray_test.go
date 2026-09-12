@@ -172,3 +172,97 @@ type fakeRemoverBackend struct {
 }
 
 func (f *fakeRemoverBackend) Remove(*Tray) { f.removed++ }
+
+// TestAMenuIsATreeAndCanBeWalkedAsOne.
+//
+// ⛔⛔ CALLERS KEPT TREATING IT AS A LIST. Before submenus existed, Items was
+// both the shape of the menu and everything in it -- so the day a caller grouped
+// rows, every walk that stopped at Items reported the grouped ones missing: a
+// count of key equivalents collapsed and a test said an action was in no row,
+// neither of which was true. The backends here have walked the tree from the
+// start; All and Leaves are that walk, offered rather than re-invented.
+func TestAMenuIsATreeAndCanBeWalkedAsOne(t *testing.T) {
+	sub := NewMenu().Add(
+		Item("inner one", nil),
+		Separator(),
+		Item("inner two", nil),
+	)
+	m := NewMenu().Add(
+		Item("top", nil),
+		Separator(),
+		SubMenu("a group", sub),
+	)
+
+	// All: everything, parents and separators included, parent before children.
+	var all []string
+	for _, it := range m.All() {
+		all = append(all, it.Label)
+	}
+	want := []string{"top", "", "a group", "inner one", "", "inner two"}
+	if len(all) != len(want) {
+		t.Fatalf("All gave %q, want %q", all, want)
+	}
+	for i := range want {
+		if all[i] != want[i] {
+			t.Errorf("All[%d] is %q, want %q", i, all[i], want[i])
+		}
+	}
+
+	// Leaves: only what somebody can choose -- no rules, no parents.
+	var leaves []string
+	for _, it := range m.Leaves() {
+		leaves = append(leaves, it.Label)
+	}
+	wantLeaves := []string{"top", "inner one", "inner two"}
+	if len(leaves) != len(wantLeaves) {
+		t.Fatalf("Leaves gave %q, want %q", leaves, wantLeaves)
+	}
+	for i := range wantLeaves {
+		if leaves[i] != wantLeaves[i] {
+			t.Errorf("Leaves[%d] is %q, want %q", i, leaves[i], wantLeaves[i])
+		}
+	}
+
+	// A nil menu yields nothing rather than panicking: a backend asks before it
+	// knows whether one was set.
+	var none *Menu
+	if got := none.All(); got != nil {
+		t.Errorf("a nil menu walked to %v", got)
+	}
+	if got := none.Leaves(); got != nil {
+		t.Errorf("a nil menu's leaves are %v", got)
+	}
+}
+
+// TestAnItemCanBeFoundByWhatItSays.
+//
+// ⭐ BY WHAT IT SAYS, NOT BY WHERE IT SITS. [Menu.Find] addresses by a path of
+// indices, which still resolves after a row is inserted above it or grouped
+// below it -- to the WRONG item, silently. A label is what the person reading
+// the menu sees, and asking for one that is not there returns nil rather than
+// somebody else's row.
+func TestAnItemCanBeFoundByWhatItSays(t *testing.T) {
+	sub := NewMenu().Add(Item("buried", nil))
+	m := NewMenu().Add(Item("first", nil), Separator(), SubMenu("a group", sub))
+
+	if got := m.ByLabel("first"); got == nil || got.Label != "first" {
+		t.Errorf("ByLabel(first) = %v", got)
+	}
+	// Through a submenu, which is the whole point.
+	if got := m.ByLabel("buried"); got == nil || got.Label != "buried" {
+		t.Errorf("ByLabel(buried) = %v", got)
+	}
+	// The parent itself is an item and can be found.
+	if got := m.ByLabel("a group"); got == nil || got.Submenu == nil {
+		t.Errorf("ByLabel(a group) = %v", got)
+	}
+	// ⛔ AND A ROW THAT IS NOT THERE IS NIL, not the nearest thing. A caller
+	// asking about a row that has been renamed wants to hear about it.
+	if got := m.ByLabel("never written"); got != nil {
+		t.Errorf("ByLabel of a row nobody wrote gave %q", got.Label)
+	}
+	var none *Menu
+	if got := none.ByLabel("first"); got != nil {
+		t.Errorf("a nil menu found %q", got.Label)
+	}
+}
