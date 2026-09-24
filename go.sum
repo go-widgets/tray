@@ -2,8 +2,8 @@ github.com/ebitengine/purego v0.11.0 h1:jhp/D+Nyv7UUW8HAcmcjt2N2rYrYi9m3SL21k0Ua
 github.com/ebitengine/purego v0.11.0/go.mod h1:DCHPP08djqhNSoTfImcnHYQRZmd0qhakvrozqaEYhGQ=
 github.com/go-macos/objc v0.10.2 h1:WX8CsDT6SbDrIT2wHAZEQBhGcpKR750llRS4oAfX9ww=
 github.com/go-macos/objc v0.10.2/go.mod h1:68hzSUlhg5bFbg1kO0z4DM6xOk4B/IofuxdlyhHHtt8=
-github.com/go-mswin/win32 v0.4.0 h1:0JAvm3XNMxOyfYX1anbtAqxNvxvUA0DZ1SyAUinhMa0=
-github.com/go-mswin/win32 v0.4.0/go.mod h1:ypmW4zosl3mXhy0O39EDbHk+AUjgaXGyFgY5UpX3AxI=
+github.com/go-mswin/win32 v0.5.0 h1:QQGNJAR7IG5DZ/ZlQ9ASSl07pJN85xNzp/RIfA+f7Yk=
+github.com/go-mswin/win32 v0.5.0/go.mod h1:tCVmiQ+p8Y9xa+aCKRxGtuMFNG6vaHvZ5LXbNAahzNs=
 github.com/go-widgets/mvvm v0.9.0 h1:NwW/hAAsJUGlxmNt0ErQ7fUrud3w5Ys1RWm7hVugdJs=
 github.com/go-widgets/mvvm v0.9.0/go.mod h1:1cUYVpDei59Ka7W3pMD1FWksBmBXfPnbPWHzBAJ/ebA=
 github.com/godbus/dbus/v5 v5.2.2 h1:TUR3TgtSVDmjiXOgAAyaZbYmIeP3DPkld3jgKGV8mXQ=
