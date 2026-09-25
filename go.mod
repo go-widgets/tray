@@ -7,7 +7,7 @@ require (
 	golang.org/x/sys v0.48.0
 )
 
-require github.com/go-mswin/win32 v0.4.0
+require github.com/go-mswin/win32 v0.5.0
 
 require github.com/go-widgets/mvvm v0.9.0
 
