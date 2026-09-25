@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -265,4 +266,85 @@ func TestAnItemCanBeFoundByWhatItSays(t *testing.T) {
 	if got := none.ByLabel("first"); got != nil {
 		t.Errorf("a nil menu found %q", got.Label)
 	}
+}
+
+// TestSetIconNoWaitPrefersAnAsyncRefresherAndFallsBackWithoutOne.
+//
+// The capability is OPTIONAL, so both directions matter and for different
+// reasons. A backend that has RefreshAsync must be used through it, because the
+// whole point is not to wait; a backend that does not must still be refreshed,
+// because otherwise an animated icon would simply stop moving on every platform
+// but one -- and stop SILENTLY, since an absent capability reports nothing. The
+// assertion fails by returning false, which is how a lost capability hides.
+func TestSetIconNoWaitPrefersAnAsyncRefresherAndFallsBackWithoutOne(t *testing.T) {
+	// With the capability: the queued path is taken and the blocking one is not.
+	fb := &fakeAsyncBackend{Headless: *NewHeadless()}
+	tr := New([]byte("PNG")).WithBackend(fb)
+	tr.setIconNoWait([]byte("NEXT"))
+	if fb.async != 1 {
+		t.Errorf("RefreshAsync called %d times, want 1", fb.async)
+	}
+	if fb.syncN != 0 {
+		t.Errorf("Refresh called %d times, want 0: the wait is the thing being avoided", fb.syncN)
+	}
+
+	// Without it: still refreshed, or an animated icon stops moving.
+	plain := &fakeSyncBackend{Headless: *NewHeadless()}
+	tr2 := New([]byte("PNG")).WithBackend(plain)
+	tr2.setIconNoWait([]byte("NEXT"))
+	if got := plain.count(); got != 1 {
+		t.Errorf("Refresh called %d times on a backend with no async path, want 1: "+
+			"an animated icon would stop moving, and silently", got)
+	}
+
+	// And either way the icon itself changed, which is the caller's actual ask.
+	if got := string(tr.Icon()); got != "NEXT" {
+		t.Errorf("icon = %q, want %q", got, "NEXT")
+	}
+	if got := string(tr2.Icon()); got != "NEXT" {
+		t.Errorf("icon = %q, want %q", got, "NEXT")
+	}
+
+	// nil backend → no panic, same as every other setter here.
+	New([]byte("PNG")).WithBackend(nil).setIconNoWait([]byte("NEXT"))
+}
+
+// fakeAsyncBackend has the optional capability.
+type fakeAsyncBackend struct {
+	Headless
+	mu           sync.Mutex
+	async, syncN int
+}
+
+func (f *fakeAsyncBackend) RefreshAsync(*Tray) {
+	f.mu.Lock()
+	f.async++
+	f.mu.Unlock()
+}
+
+func (f *fakeAsyncBackend) Refresh(t *Tray) {
+	f.mu.Lock()
+	f.syncN++
+	f.mu.Unlock()
+	f.Headless.Refresh(t)
+}
+
+// fakeSyncBackend does not.
+type fakeSyncBackend struct {
+	Headless
+	mu sync.Mutex
+	n  int
+}
+
+func (f *fakeSyncBackend) Refresh(t *Tray) {
+	f.mu.Lock()
+	f.n++
+	f.mu.Unlock()
+	f.Headless.Refresh(t)
+}
+
+func (f *fakeSyncBackend) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.n
 }
