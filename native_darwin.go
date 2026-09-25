@@ -100,7 +100,16 @@ type darwinBackend struct {
 	tagSeq    int         // running leaf index while an NSMenu is being built
 	targetCls objc.Class
 	target    objc.ID
-	pending   *Tray // tray the main-thread setup/refresh selectors act on
+	// pending is the tray the main-thread setup/refresh selectors act on.
+	//
+	// Guarded, because the refresh hop no longer waits. It used to: the blocking
+	// performSelectorOnMainThread: was a rendezvous, and a rendezvous is a
+	// happens-before -- the write here and the read over there could not
+	// overlap. Taking the wait away takes that away with it, and an animated
+	// icon writes this several times a second from a goroutine while the main
+	// thread reads it.
+	pendingMu sync.Mutex
+	pending   *Tray
 	// setupErr carries the outcome of setupOnMain back across the main-thread
 	// hop. runOnMain waits for the selector to finish, so it is written and
 	// read on either side of a rendezvous rather than concurrently.
@@ -203,7 +212,7 @@ func nsImageFromPNG(png []byte, points float64) objc.ID {
 // this each time, and registering a fresh Objective-C class per call would grow
 // the runtime's class table for the life of the process.
 func (b *darwinBackend) prepare(t *Tray) error {
-	b.pending = t
+	b.setPending(t)
 
 	if err := ensureAppKit(); err != nil {
 		return err
@@ -241,7 +250,7 @@ func (b *darwinBackend) prepare(t *Tray) error {
 						// the run loop happened to drain. An animated icon
 						// refreshes several times a second, and the drain is not
 						// on that schedule.
-						objc.AutoreleasePool(func() { b.apply(b.pending) })
+						objc.AutoreleasePool(func() { b.apply(b.takePending()) })
 					},
 				},
 				{
@@ -275,6 +284,23 @@ func (b *darwinBackend) prepare(t *Tray) error {
 	return nil
 }
 
+// setPending records the tray the next main-thread selector should act on.
+func (b *darwinBackend) setPending(t *Tray) {
+	b.pendingMu.Lock()
+	b.pending = t
+	b.pendingMu.Unlock()
+}
+
+// takePending is what the main thread acts on. Later refreshes overwrite
+// earlier ones, so two hops that arrive together apply the same, newest tray:
+// for an animated icon that is a dropped frame, which is what dropping a frame
+// is for.
+func (b *darwinBackend) takePending() *Tray {
+	b.pendingMu.Lock()
+	defer b.pendingMu.Unlock()
+	return b.pending
+}
+
 // runOnMain performs selector s on the process main thread and blocks until it
 // completes. On the main thread Cocoa runs it inline (so it also works before a
 // run loop is started, i.e. the Run path); from any other thread it is queued on
@@ -282,6 +308,29 @@ func (b *darwinBackend) prepare(t *Tray) error {
 // before prepare — makes it a safe Objective-C nil-message no-op.
 func (b *darwinBackend) runOnMain(s objc.SEL) {
 	b.target.Send(objc.Sel("performSelectorOnMainThread:withObject:waitUntilDone:"), s, objc.ID(0), true)
+}
+
+// runOnMainAsync queues selector s for the main thread and returns at once.
+//
+// It exists for work nobody waits for, and it is not an optimisation. Waiting
+// means "run it inline if we are already on the main thread", and inline is
+// what a freeze in a shipped application turned out to be: the main thread,
+// inside an FBSWorkspaceScenesClient createSceneWithIdentity: callout for the
+// status item, ran a refresh that asked AppKit for another scene, and
+// -[BSServiceDispatchQueue performAsyncAndWait:] waited for ownership of a
+// queue the callout in progress already held. Every one of the main thread's
+// 2446 samples sat in that one kevent_id.
+//
+// Queued instead of inline, the work runs when the run loop next services its
+// sources, which is not in the middle of somebody else's callout.
+//
+// ⛔ This is reasoned, not reproduced. The freeze was sampled in a running
+// application and has not been made to happen on demand -- see
+// TestLiveSettingTheIconWhileAttachingDoesNotDeadlock, which tries and fails.
+// The nesting it removes is real and visible in that trace; that it removes
+// every way in is not established.
+func (b *darwinBackend) runOnMainAsync(s objc.SEL) {
+	b.target.Send(objc.Sel("performSelectorOnMainThread:withObject:waitUntilDone:"), s, objc.ID(0), false)
 }
 
 // setupOnMain resolves the shared NSApplication, creates the status-bar item and
@@ -320,7 +369,7 @@ func (b *darwinBackend) setupOnMain() {
 		// item on every run would be a leak in the other direction.
 		b.item.Send(objc.Sel("retain"))
 	}
-	b.apply(b.pending)
+	b.apply(b.takePending())
 }
 
 // Run shows the tray and blocks on AppKit's run loop until Quit. It reports the
@@ -360,9 +409,31 @@ func (b *darwinBackend) Attach(t *Tray) error {
 	return b.prepare(t)
 }
 
+// Refresh waits, and has to.
+//
+// SetIcon carries an implicit promise its callers rely on -- when it returns,
+// the icon is on the item -- and a live test reads the button's image on the
+// line after setting it. Taking the wait away here broke that: "the reused item
+// has no image". Only the animator, which nobody reads back, gives it up; see
+// RefreshAsync.
 func (b *darwinBackend) Refresh(t *Tray) {
-	b.pending = t
+	b.setPending(t)
 	b.runOnMain(objc.Sel("goTrayRefresh:"))
+}
+
+// RefreshAsync queues a refresh instead of waiting for one, for the caller that
+// makes thousands of them and reads none back.
+//
+// An animated icon at six frames per 900ms is about 24 000 refreshes an hour,
+// each one a wait that runs AppKit work INLINE when it lands on the main
+// thread -- inline being what a sampled freeze turned out to be, a refresh
+// running inside an FBSWorkspaceScenesClient callout and asking AppKit for a
+// scene the callout's own queue already owned. Queued, the work waits for the
+// run loop to service its sources, which is not the middle of somebody else's
+// callout.
+func (b *darwinBackend) RefreshAsync(t *Tray) {
+	b.setPending(t)
+	b.runOnMainAsync(objc.Sel("goTrayRefresh:"))
 }
 
 // apply pushes the tray's icon, tooltip and menu into the live NSStatusItem. It
@@ -533,7 +604,7 @@ func (b *darwinBackend) Quit() {
 // a Tray whose life is shorter than the process's own (one of several
 // per-account items) needs to not have.
 func (b *darwinBackend) Remove(t *Tray) {
-	b.pending = t
+	b.setPending(t)
 	b.runOnMain(objc.Sel("goTrayRemove:"))
 }
 

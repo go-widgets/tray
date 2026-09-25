@@ -203,6 +203,28 @@ func (t *Tray) SetTooltip(s string) *Tray {
 	return t
 }
 
+// asyncRefresher is the optional capability a backend has when a refresh can be
+// QUEUED for the UI thread instead of waited on. A backend without it is simply
+// refreshed the ordinary way: nothing announces itself, and nothing breaks.
+type asyncRefresher interface{ RefreshAsync(*Tray) }
+
+// setIconNoWait changes the icon without waiting for the platform to show it.
+//
+// It exists for the animator and is not exported, because the promise SetIcon
+// makes -- when it returns, the icon is up -- is one callers read back, and
+// only a caller that makes thousands of changes and reads none of them can
+// afford to give it up.
+func (t *Tray) setIconNoWait(iconPNG []byte) {
+	t.mu.Lock()
+	t.icon = iconPNG
+	t.mu.Unlock()
+	if a, ok := t.backend.(asyncRefresher); ok {
+		a.RefreshAsync(t)
+		return
+	}
+	t.refresh()
+}
+
 // SetIcon replaces the icon (PNG bytes) and refreshes if running.
 func (t *Tray) SetIcon(iconPNG []byte) *Tray {
 	t.mu.Lock()

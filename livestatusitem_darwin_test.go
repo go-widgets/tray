@@ -703,3 +703,90 @@ func TestLiveChangingOnlyAnIconRebuildsTheMenu(t *testing.T) {
 			second.Width, want)
 	}
 }
+
+// TestLiveSettingTheIconWhileAttachingDoesNotDeadlock is the reproduction that
+// FAILED, kept as the record of an attempt rather than offered as a witness.
+//
+// ⛔ It does NOT demonstrate the async hop, and the reason is worth stating
+// exactly: its first arm calls SetIcon, which still WAITS, deliberately -- that
+// is the pre-change code path, unchanged, and it does not hang here. The second
+// arm calls setIconNoWait, the path the animator now takes, which did not exist
+// before. So neither arm can distinguish before from after, and this is not the
+// test that justifies the change.
+//
+// The evidence for that is a sample of the frozen application, where every one
+// of the main thread's 2446 samples sat in one kevent_id: a refresh running
+// INLINE inside an FBSWorkspaceScenesClient createSceneWithIdentity: callout for
+// the status item, asking AppKit for another scene, with
+// -[BSServiceDispatchQueue performAsyncAndWait:] waiting for ownership of a
+// queue the callout in progress already held.
+//
+// What this DOES guard is the shape, on both paths: a tray whose icon is being
+// changed from another goroutine while the item is being created must make
+// PROGRESS. If a future change reintroduces a wait that can nest, on either
+// path, this is the cheapest place it will show.
+//
+// It is written with a deadline rather than a plain call, because the failure
+// being looked for is a HANG: without one the test does not fail, it stops, and
+// the suite is killed by the outer timeout with no line naming the cause.
+func TestLiveSettingTheIconWhileAttachingDoesNotDeadlock(t *testing.T) {
+	requireWindowServer(t)
+
+	for _, arm := range []struct {
+		name string
+		set  func(*Tray, []byte)
+	}{
+		// The path SetIcon's callers get, which waits and always did.
+		{"SetIcon waits", func(tr *Tray, png []byte) { tr.SetIcon(png) }},
+		// The path the animator takes, which does not.
+		{"setIconNoWait queues", func(tr *Tray, png []byte) { tr.setIconNoWait(png) }},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			b := &darwinBackend{}
+			tr := New(smallPNG(t)).WithBackend(b)
+			icons := [][]byte{smallPNG(t), smallPNG(t)}
+
+			done := make(chan struct{})
+			start := time.Now()
+			go func() {
+				// Hammer the icon from a goroutine while the main thread is
+				// inside Attach, which is where the sampled freeze happened: the
+				// refresh landed in the middle of the status item's own scene
+				// callout.
+				for i := 0; i < 400; i++ {
+					objc.AutoreleasePool(func() { arm.set(tr, icons[i%2]) })
+				}
+				close(done)
+			}()
+
+			if err := b.Attach(tr); err != nil {
+				t.Fatalf("attach: %v", err)
+			}
+
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatal("changing the icon while attaching did not finish in 30s: " +
+					"a refresh is waiting on something the work it is nested in holds")
+			}
+
+			// Logged, not asserted. The queued arm is one to two orders of
+			// magnitude faster for the same 400 changes -- 3.6s against 50ms on
+			// one run here, 1.9s against 10ms on the next -- which is the cost
+			// the animator was paying. The ABSOLUTE numbers move by a factor of
+			// two between runs on an idle machine, so a threshold on a wall
+			// clock in CI would fail for reasons that have nothing to do with
+			// this. The ratio is the finding; the number is a log line.
+			t.Logf("400 icon changes in %v", time.Since(start).Round(time.Millisecond))
+
+			// And the item is still live afterwards, because work DROPPED rather
+			// than done would also beat the deadline.
+			if b.item == 0 {
+				t.Fatal("no status item after attaching")
+			}
+			if got := b.item.Send(objc.Sel("button")); got == 0 {
+				t.Fatal("the status item has no button, so nothing was actually created")
+			}
+		})
+	}
+}

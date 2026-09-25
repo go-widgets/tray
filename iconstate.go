@@ -111,13 +111,13 @@ func (a *iconAnimator) run() {
 				tick, stopTick = nil, nil
 			}
 			frames, i = f, 0
-			a.tray.SetIcon(frames[0])
+			a.tray.setIconNoWait(frames[0])
 			if len(frames) > 1 {
 				tick, stopTick = tickerFor(a.period / time.Duration(len(frames)))
 			}
 		case <-tick:
 			i = (i + 1) % len(frames)
-			a.tray.SetIcon(frames[i])
+			a.tray.setIconNoWait(frames[i])
 		}
 	}
 }
