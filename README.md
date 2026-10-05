@@ -29,6 +29,27 @@ t.OnReady(func() { /* live */ })
 t.Run() // blocks on the platform event loop until Quit
 ```
 
+### Beside a window: `Attach`
+
+A program that already runs a window's event loop cannot also give `Run` its
+main thread. `Attach` puts the same item up and **returns** instead of
+blocking; `Quit` (or `Close`) takes it down again.
+
+```go
+if err := t.Attach(); err != nil { /* no tray here: say so */ }
+defer t.Quit()
+```
+
+| backend | what `Attach` does |
+|---------|--------------------|
+| darwin  | joins the host's running `NSApplication`; call it once that loop runs |
+| linux   | exports the StatusNotifierItem on the session bus and returns; godbus serves it from its own goroutines |
+| windows | runs the icon's message loop on a thread of its own (a Win32 loop belongs to a thread, not the process) |
+| headless, other platforms | `ErrNoBackend` |
+
+`Attach` does not fire `OnReady` on any backend: the host's loop is what is
+ready, and it already said so. go-widgets/application uses it for `Spec.Tray`.
+
 ## Status
 
 - **Core** (`Tray`, `Menu`, `MenuItem`, item activation/toggle, `Backend`
@@ -40,9 +61,15 @@ t.Run() // blocks on the platform event loop until Quit
     **Runtime-confirmed on a real macOS session**: the item is the thing that
     leaves the menu bar when the program stops and comes back when it starts,
     and clicking it opens its menu.
-  - **windows** / **linux** — implemented and compile-verified; runtime
-    confirmation pending. They ignore `MenuItem.Icon`: a row carrying one draws
-    as it did before, which is a gap, not a promise kept.
+  - **linux** — the dbusmenu methods are tested in-process, under `-race`
+    (the tree `Refresh` rebuilds is the one the bus reads, behind one lock),
+    and CI runs `Attach` against a real session bus: the item's name is
+    claimed, its menu answers `GetLayout`, and `Quit` withdraws it. What CI
+    cannot show is a desktop shell drawing it.
+  - **windows** — implemented and compile-verified; the icon and its menu were
+    proven on a Windows 11 VM. `Attach` is compile-verified only.
+  - windows and linux ignore `MenuItem.Icon`: a row carrying one draws as it
+    did before, which is a gap, not a promise kept.
   - anything else — `defaultBackend` is nil and `Run` reports `ErrNoBackend`,
     which is the difference between "there is no tray here" and "your tray
     silently does nothing".

@@ -55,6 +55,23 @@ jobs:
             echo "::error::the portable code is below 100% (lines above)"; exit 1
           fi
           echo "portable code: 100%"
+      - name: race detector, with a session bus for the Linux backend
+        # Two of the regressions here exist ONLY under -race: the tray's own
+        # fields (racesafety_test.go) and the Linux backend's dbusmenu tree,
+        # which Refresh rebuilt while godbus read it (go-widgets/tray#35).
+        # Without -race both pass on the code they were written against, so a
+        # lane that never runs it tests nothing of the sort.
+        #
+        # The bus is for Attach: it is the one Linux path that cannot be shown
+        # without one, and the live test skips without it. A lane that silently
+        # skipped would be the old blind spot, so the log has to say it RAN.
+        # shell: bash for pipefail -- a failing go test must not be hidden by tee.
+        shell: bash
+        run: |
+          command -v dbus-run-session >/dev/null || sudo apt-get install -y --no-install-recommends dbus-daemon
+          dbus-run-session -- go test -race -count=1 -v ./... | tee race.txt | grep -E '^(--- |ok|FAIL)'
+          grep -q -- '--- PASS: TestLiveAttachExportsTheItemAndQuitWithdrawsIt' race.txt || {
+            echo "::error::the live Linux Attach test did not RUN and pass"; exit 1; }
   # The native backend was BUILT here for a long time and never RUN. That is
   # how `go test -tags tray_native ./...` came to die on SIGTRAP over a suite
   # CI reported as green: two assertions written for the untagged build entered
