@@ -112,6 +112,36 @@ type windowsBackend struct {
 func defaultBackend() Backend { return &windowsBackend{} }
 
 func (b *windowsBackend) Run(t *Tray) error {
+	return b.run(t, t.ready)
+}
+
+// Attach implements the attacher capability (see [Tray.Attach]): the icon Run
+// puts up, on a thread of its own, returned from as soon as it is there.
+//
+// A Win32 message loop belongs to a THREAD, not to the process: the icon's
+// message-only window and the pump that serves it can live on any OS thread,
+// beside a host window pumped on another. So there is no host loop to join,
+// and attaching is Run on a goroutine pinned to its own thread -- which a host
+// that owns its window's loop (go-widgets/application) could not do for itself
+// without knowing that.
+//
+// Like the other backends' Attach it does not fire OnReady, and it reports the
+// setup failure rather than returning before it is known.
+func (b *windowsBackend) Attach(t *Tray) error {
+	// Room for both values run can produce -- started's nil, then a pump error
+	// nobody is waiting for any more -- so the goroutine never blocks on a send.
+	up := make(chan error, 2)
+	go func() {
+		if err := b.run(t, func() { up <- nil }); err != nil {
+			up <- err
+		}
+	}()
+	return <-up
+}
+
+// run is Run with what to do once the icon is up made a parameter: Run fires
+// OnReady, Attach unblocks its caller.
+func (b *windowsBackend) run(t *Tray, started func()) error {
 	runtime.LockOSThread()
 	b.tray = t
 
@@ -124,18 +154,17 @@ func (b *windowsBackend) Run(t *Tray) error {
 	b.mw = mw
 
 	b.apply(t)
-	t.ready()
+	started()
 
-	if err := win32.Pump(); err != nil {
-		return err
-	}
+	// After started, an error has nobody left to hear it: Attach has returned.
+	pumpErr := win32.Pump()
 
 	nid := b.nid
 	procShellNotifyIcon.Call(nimDelete, uintptr(unsafe.Pointer(&nid)))
 	if b.hIcon != 0 {
 		procDestroyIcon.Call(uintptr(b.hIcon))
 	}
-	return nil
+	return pumpErr
 }
 
 func (b *windowsBackend) Refresh(t *Tray) { b.apply(t) }
