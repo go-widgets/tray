@@ -88,18 +88,18 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with: { go-version: 1.27.2 }
-      - name: test with the native backend linked in
+      # Since #16 the native backend is linked in by default: the tray_native
+      # tag this lane used to pass selects nothing, so it ran the same suite
+      # twice. Once, untagged, is the build every caller gets.
+      - name: test, with the native backend linked in as it is by default
         env: { CGO_ENABLED: "0" }
-        run: go test -tags tray_native ./...
+        run: go test ./...
       - name: say whether the live suite RAN or skipped
         # A green lane that skipped everything is the same blind spot in a new
         # place. The live tests skip themselves without a window server, so the
         # log has to say which happened rather than leaving "ok" to imply it.
         env: { CGO_ENABLED: "0" }
-        run: go test -tags tray_native -run Live -v ./...
-      - name: test without it, on darwin too
-        env: { CGO_ENABLED: "0" }
-        run: go test ./...
+        run: go test -run Live -v ./...
 
   build:
     runs-on: ubuntu-latest
@@ -111,13 +111,16 @@ jobs:
           - { goos: windows, goarch: amd64 }
           - { goos: linux, goarch: amd64 }
           - { goos: linux, goarch: arm64 }
+          - { goos: linux, goarch: riscv64 }
+          - { goos: linux, goarch: loong64 }
+          - { goos: linux, goarch: ppc64le }
+          - { goos: linux, goarch: s390x }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with: { go-version: 1.27.2 }
-      - name: build core
+      # The native backends have been on by default since #16; there is no
+      # tag to build them with any more, so one build covers both.
+      - name: build
         env: { GOOS: "${{ matrix.goos }}", GOARCH: "${{ matrix.goarch }}", CGO_ENABLED: "0" }
         run: go build ./...
-      - name: build native backend (-tags tray_native)
-        env: { GOOS: "${{ matrix.goos }}", GOARCH: "${{ matrix.goarch }}", CGO_ENABLED: "0" }
-        run: go build -tags tray_native ./...
