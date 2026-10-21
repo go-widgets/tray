@@ -7,7 +7,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: 1.27.2 }
+        with: { go-version: 1.27.3 }
       - name: nothing big is tracked
         shell: bash
         run: |
@@ -87,7 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: 1.27.2 }
+        with: { go-version: 1.27.3 }
       # Since #16 the native backend is linked in by default: the tray_native
       # tag this lane used to pass selects nothing, so it ran the same suite
       # twice. Once, untagged, is the build every caller gets.
@@ -118,7 +118,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: 1.27.2 }
+        with: { go-version: 1.27.3 }
       # The native backends have been on by default since #16; there is no
       # tag to build them with any more, so one build covers both.
       - name: build
