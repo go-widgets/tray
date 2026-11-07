@@ -3,11 +3,11 @@ module github.com/go-widgets/tray
 go 1.27.1
 
 require (
-	github.com/go-macos/objc v0.11.2
+	github.com/go-macos/objc v0.12.0
 	github.com/go-mswin/win32 v0.6.0
 	github.com/go-widgets/mvvm v0.15.0
 	github.com/godbus/dbus/v5 v5.2.4
 	golang.org/x/sys v0.49.0
 )
 
-require github.com/ebitengine/purego v0.11.1 // indirect
+require github.com/ebitengine/purego v0.11.3 // indirect
