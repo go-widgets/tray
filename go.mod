@@ -3,7 +3,7 @@ module github.com/go-widgets/tray
 go 1.27.1
 
 require (
-	github.com/go-macos/objc v0.12.0
+	github.com/go-macos/objc v0.13.0
 	github.com/go-mswin/win32 v0.7.0
 	github.com/go-widgets/mvvm v0.15.0
 	github.com/godbus/dbus/v5 v5.2.4
