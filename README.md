@@ -50,6 +50,34 @@ defer t.Quit()
 `Attach` does not fire `OnReady` on any backend: the host's loop is what is
 ready, and it already said so. go-widgets/application uses it for `Spec.Tray`.
 
+### System notifications: `Notify`
+
+A real OS notification (not the painted in-window toast), delivered even when
+no window is open:
+
+```go
+err := t.Notify(tray.Notification{
+    Title:   "Tunnel dropped",         // required, <= 63 characters
+    Body:    "Reconnecting in 5 s",    // optional, <= 255 characters
+    OnClick: func() { /* raise the window */ },
+})
+```
+
+It returns once the platform has accepted the notification. Errors are typed:
+`ErrEmptyTitle` / the bound errors from `Notification.Validate`,
+`ErrNoNotifier`, `ErrNotRunning`, `ErrNotBundled`, `ErrNotAuthorized`. A
+courtesy notification should log them and carry on.
+
+| backend | what `Notify` does | requirement |
+|---------|--------------------|-------------|
+| darwin  | `UNUserNotificationCenter` (alert + sound); the delegate also shows it while the app is frontmost | the process must run from a **`.app` bundle with a `CFBundleIdentifier`** (a bare executable gets `ErrNotBundled`, not Apple's exception); the first call shows the system's authorization prompt and waits for the answer; a denial is `ErrNotAuthorized` and is asked again next time |
+| linux   | `org.freedesktop.Notifications.Notify` on the tray's session-bus connection; `OnClick` rides the `default` action (`ActionInvoked`) | the tray is running (`Run`/`Attach`); the body is HTML-escaped when the server advertises `body-markup` |
+| windows | a `Shell_NotifyIcon` balloon (`NIF_INFO`) on the tray's own icon, which Windows 10/11 draws as a toast, with no WinRT or Start-menu shortcut; `OnClick` is `NIN_BALLOONUSERCLICK` | the tray is running; only the latest balloon's click is delivered |
+| headless | records in `Headless.Notified` | `Run` has started |
+
+Control characters other than newline and tab are refused on every platform, so
+the same call never succeeds on one OS and fails on another.
+
 ## Status
 
 - **Core** (`Tray`, `Menu`, `MenuItem`, item activation/toggle, `Backend`

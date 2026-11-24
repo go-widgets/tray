@@ -22,6 +22,7 @@ package tray
 
 import (
 	"runtime"
+	"sync"
 	"unsafe"
 
 	"github.com/go-mswin/win32"
@@ -67,6 +68,15 @@ const (
 	nifMessage = 0x1
 	nifIcon    = 0x2
 	nifTip     = 0x4
+	nifInfo    = 0x10 // the balloon fields (szInfo, szInfoTitle, dwInfoFlags) are valid
+
+	niifInfo = 0x1 // dwInfoFlags: the "i" information icon
+
+	// Balloon events, in the low word of lParam on the tray's callback message
+	// (NIN_BALLOON* = WM_USER + 2..5).
+	ninBalloonHide      = 0x403
+	ninBalloonTimeout   = 0x404
+	ninBalloonUserClick = 0x405
 
 	mfString    = 0x0
 	mfGrayed    = 0x1
@@ -106,6 +116,11 @@ type windowsBackend struct {
 	leaves []*MenuItem // command id (1-based) -> item, from leafItems
 	nextID int
 	added  bool
+
+	// nmu guards nid, added and click: apply runs on the pump thread while Notify
+	// runs on the caller's, and Notify copies nid to build the balloon from it.
+	nmu   sync.Mutex
+	click func() // the latest balloon's OnClick; only the latest can be clicked
 }
 
 // defaultBackend links the Windows Shell_NotifyIcon backend.
@@ -184,6 +199,10 @@ func (b *windowsBackend) wndProc(hwnd, msgID, wParam, lParam uintptr) uintptr {
 		switch uint32(lParam) & 0xffff {
 		case wmRButtonUp, wmContextMenu, wmLButtonUp:
 			b.showMenu()
+		case ninBalloonUserClick:
+			b.balloonEnded(true)
+		case ninBalloonTimeout, ninBalloonHide:
+			b.balloonEnded(false)
 		}
 		return 0
 	case wmCommand:
@@ -294,6 +313,8 @@ func (b *windowsBackend) apply(t *Tray) {
 	}
 	b.hIcon = b.makeIcon(t.Icon())
 
+	b.nmu.Lock()
+	defer b.nmu.Unlock()
 	b.nid = notifyIconData{
 		cbSize:           uint32(unsafe.Sizeof(notifyIconData{})),
 		hWnd:             windows.Handle(b.mw.Hwnd),

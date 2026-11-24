@@ -14,6 +14,9 @@ type Headless struct {
 	LastTip     string
 	LastMenu    *Menu
 	LastVisible bool
+	// Notified is every notification posted with [Tray.Notify], oldest first.
+	// Read it under no concurrent Notify, or through the tray's own goroutine.
+	Notified []Notification
 
 	quit   chan struct{}
 	closed bool
@@ -50,6 +53,18 @@ func (h *Headless) Quit() {
 		h.closed = true
 		close(h.quit)
 	}
+}
+
+// Notify implements [Notifier] by recording the notification in Notified. Like
+// the real backends it refuses before the tray is running, with [ErrNotRunning].
+func (h *Headless) Notify(_ *Tray, n Notification) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.Started || h.closed {
+		return ErrNotRunning
+	}
+	h.Notified = append(h.Notified, n)
+	return nil
 }
 
 // Snapshot returns the state this backend last recorded, under the lock.

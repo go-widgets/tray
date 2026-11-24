@@ -86,6 +86,9 @@ type linuxBackend struct {
 	sniProps  *prop.Properties
 	menuProps *prop.Properties
 
+	clicks     *clickTable[uint32] // notification click callbacks; see notify_linux.go
+	clicksConn *dbus.Conn          // the connection clicks is subscribed on
+
 	done     chan struct{} // closed by Quit; guarded by mu
 	quitting bool          // Quit was called, possibly before done existed
 	quitOnce sync.Once
