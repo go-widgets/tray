@@ -94,9 +94,12 @@ func postDarwin(c unCenter, clicks *clickTable[string], n Notification) error {
 	return nil
 }
 
+// randRead is a variable so a test can make the system's random source fail.
+var randRead = rand.Read
+
 func newNotificationID() (string, error) {
 	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
+	if _, err := randRead(raw[:]); err != nil {
 		return "", err
 	}
 	return "go-widgets-tray-" + hex.EncodeToString(raw[:]), nil
@@ -109,26 +112,58 @@ type realCenter struct {
 	err    error
 }
 
+// The calls into Objective-C that need a bundle, an app or the user, behind
+// variables: the decisions made around them are what the tests assert.
+var (
+	appKitReady  = ensureAppKit
+	mainBundleID = func() string {
+		bid := objc.ClassID("NSBundle").Send(objc.Sel("mainBundle")).Send(objc.Sel("bundleIdentifier"))
+		if bid == 0 {
+			return ""
+		}
+		return objc.GoString(bid)
+	}
+	unLoad          = func() error { return objc.Load(userNotificationsPath) }
+	unCurrentCenter = func() objc.ID {
+		return objc.ClassID("UNUserNotificationCenter").Send(objc.Sel("currentNotificationCenter"))
+	}
+	// unRegisterDelegate registers the delegate class and returns an instance.
+	unRegisterDelegate = registerDelegate
+)
+
 func (r *realCenter) bundled() bool {
-	if err := ensureAppKit(); err != nil {
+	if err := appKitReady(); err != nil {
 		return false
 	}
-	bid := objc.ClassID("NSBundle").Send(objc.Sel("mainBundle")).Send(objc.Sel("bundleIdentifier"))
-	return bid != 0 && objc.GoString(bid) != ""
+	return mainBundleID() != ""
 }
 
 // setup loads the framework and registers the delegate once.
 func (r *realCenter) setup() error {
 	r.once.Do(func() {
-		if err := objc.Load(userNotificationsPath); err != nil {
+		if err := unLoad(); err != nil {
 			r.err = fmt.Errorf("tray: loading UserNotifications: %w", err)
 			return
 		}
-		r.center = objc.ClassID("UNUserNotificationCenter").Send(objc.Sel("currentNotificationCenter"))
+		r.center = unCurrentCenter()
 		if r.center == 0 {
 			r.err = ErrNoNotifier
 			return
 		}
+		delegate, err := unRegisterDelegate()
+		if err != nil {
+			r.err = fmt.Errorf("%w: %v", ErrNoTargetClass, err)
+			return
+		}
+		r.center.Send(objc.Sel("setDelegate:"), delegate) // weak on Apple's side; delegate lives for the process
+	})
+	return r.err
+}
+
+// registerDelegate registers the class whose instance receives the center's
+// callbacks and returns one instance.
+func registerDelegate() (objc.ID, error) {
+	{
 		cls, err := objc.RegisterClass(
 			"GoWidgetsTrayNotificationDelegate",
 			objc.GetClass("NSObject"),
@@ -155,27 +190,19 @@ func (r *realCenter) setup() error {
 			},
 		)
 		if err != nil {
-			r.err = fmt.Errorf("%w: %v", ErrNoTargetClass, err)
-			return
+			return 0, err
 		}
-		delegate := objc.ID(cls).Send(objc.Sel("alloc")).Send(objc.Sel("init"))
-		r.center.Send(objc.Sel("setDelegate:"), delegate) // weak on Apple's side; delegate lives for the process
-	})
-	return r.err
+		return objc.ID(cls).Send(objc.Sel("alloc")).Send(objc.Sel("init")), nil
+	}
 }
 
 func (r *realCenter) authorize() error {
 	if err := r.setup(); err != nil {
 		return err
 	}
-	type answer struct {
-		granted bool
-		failed  bool
-		text    string
-	}
-	ch := make(chan answer, 1)
+	ch := make(chan authAnswer, 1)
 	blk := objc.NewBlock(func(_ objc.Block, granted bool, e objc.ID) {
-		a := answer{granted: granted}
+		a := authAnswer{granted: granted}
 		if e != 0 {
 			a.failed, a.text = true, nsErrorText(e) // copied here: e dies with the block
 		}
@@ -185,16 +212,36 @@ func (r *realCenter) authorize() error {
 	r.center.Send(objc.Sel("requestAuthorizationWithOptions:completionHandler:"), uint64(unAuthSoundAlert), blk)
 	select {
 	case a := <-ch:
-		if a.failed {
-			return fmt.Errorf("%w: %s", ErrNotAuthorized, a.text)
-		}
-		if !a.granted {
-			return ErrNotAuthorized
-		}
-		return nil
+		return a.err()
 	case <-time.After(authTimeout):
 		return fmt.Errorf("%w: no answer to the system prompt within %v", ErrNotAuthorized, authTimeout)
 	}
+}
+
+// authAnswer is what the authorization completion handler reported.
+type authAnswer struct {
+	granted bool
+	failed  bool
+	text    string
+}
+
+func (a authAnswer) err() error {
+	if a.failed {
+		return fmt.Errorf("%w: %s", ErrNotAuthorized, a.text)
+	}
+	if !a.granted {
+		return ErrNotAuthorized
+	}
+	return nil
+}
+
+// postAnswer is the text a post completion handler reports for its NSError:
+// "" for none (accepted), else the refusal with the error's own text.
+func postAnswer(e objc.ID, text func(objc.ID) string) string {
+	if e == 0 {
+		return ""
+	}
+	return "refused: " + text(e)
 }
 
 func (r *realCenter) post(id, title, body string) error {
@@ -213,11 +260,7 @@ func (r *realCenter) post(id, title, body string) error {
 
 		ch := make(chan string, 1) // "" = accepted
 		blk := objc.NewBlock(func(_ objc.Block, e objc.ID) {
-			if e == 0 {
-				ch <- ""
-				return
-			}
-			ch <- "refused: " + nsErrorText(e) // copied here: e dies with the block
+			ch <- postAnswer(e, nsErrorText) // text copied here: e dies with the block
 		})
 		defer blk.Release()
 		r.center.Send(objc.Sel("addNotificationRequest:withCompletionHandler:"), req, blk)
