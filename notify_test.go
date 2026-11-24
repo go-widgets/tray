@@ -81,8 +81,25 @@ func (bareBackend) Run(*Tray) error { return nil }
 func (bareBackend) Refresh(*Tray)   {}
 func (bareBackend) Quit()           {}
 
+// noPanic runs f and reports a panic as a failed assertion. A broken guard then
+// fails the test that covers it, instead of killing the test binary and hiding
+// every test that would have run after it.
+func noPanic(t *testing.T, what string, f func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("%s panicked: %v", what, r)
+		}
+	}()
+	f()
+}
+
 func TestTrayNotifyWithoutCapability(t *testing.T) {
-	if err := New(nil).WithBackend(bareBackend{}).Notify(Notification{Title: "t"}); !errors.Is(err, ErrNoNotifier) {
+	var err error
+	noPanic(t, "Notify on a backend that cannot notify", func() {
+		err = New(nil).WithBackend(bareBackend{}).Notify(Notification{Title: "t"})
+	})
+	if !errors.Is(err, ErrNoNotifier) {
 		t.Fatalf("err = %v, want ErrNoNotifier", err)
 	}
 	tr := New(nil)
@@ -113,8 +130,18 @@ func TestUTF16TruncNeverSplitsAPair(t *testing.T) {
 	if r := utf16.Decode(got); string(r) != strings.Repeat("a", 62) {
 		t.Fatalf("decoded %q", string(r))
 	}
-	if got := utf16Trunc(units[:5], 63); len(got) != 5 {
-		t.Fatalf("short input changed: %d", len(got))
+	var short []uint16
+	noPanic(t, "utf16Trunc of an input shorter than max", func() { short = utf16Trunc(units[:5], 63) })
+	if len(short) != 5 {
+		t.Fatalf("short input changed: %d", len(short))
+	}
+	// An input of exactly max units fits as it is, even when its last unit is a
+	// high surrogate: nothing was cut, so no pair was split.
+	exact := append(utf16.Encode([]rune(strings.Repeat("a", 62))), 0xD83D)
+	var same []uint16
+	noPanic(t, "utf16Trunc of an input of exactly max units", func() { same = utf16Trunc(exact, 63) })
+	if len(same) != 63 {
+		t.Fatalf("input of exactly max units cut to %d, want 63", len(same))
 	}
 	if got := utf16Trunc(units, 0); len(got) != 0 {
 		t.Fatalf("max 0 kept %d units", len(got))
