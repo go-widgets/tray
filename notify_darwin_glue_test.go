@@ -100,6 +100,27 @@ func TestAuthorizeAndPostReturnTheSetupError(t *testing.T) {
 	}
 }
 
+// Registering the delegate needs no bundle and no center, only the runtime; the
+// class name is global to the process, so the second registration is refused.
+func TestRegisterDelegateRefusesASecondRegistration(t *testing.T) {
+	first, err := registerDelegate()
+	if err != nil || first == 0 {
+		t.Fatalf("first registration = %v, %v", first, err)
+	}
+	if id, err := registerDelegate(); err == nil {
+		t.Fatalf("a second registration of the same class returned %v, want an error", id)
+	}
+}
+
+func TestBareExecutableHasNoBundleIdentifier(t *testing.T) {
+	if err := ensureAppKit(); err != nil {
+		t.Skip(err)
+	}
+	if id := mainBundleID(); id != "" {
+		t.Fatalf("a test binary reported bundle id %q", id)
+	}
+}
+
 func TestAuthAnswerError(t *testing.T) {
 	if err := (authAnswer{granted: true}).err(); err != nil {
 		t.Errorf("granted: %v", err)

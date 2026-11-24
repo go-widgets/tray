@@ -117,11 +117,8 @@ type realCenter struct {
 var (
 	appKitReady  = ensureAppKit
 	mainBundleID = func() string {
-		bid := objc.ClassID("NSBundle").Send(objc.Sel("mainBundle")).Send(objc.Sel("bundleIdentifier"))
-		if bid == 0 {
-			return ""
-		}
-		return objc.GoString(bid)
+		// GoString of a nil identifier (a bare executable) is "".
+		return objc.GoString(objc.ClassID("NSBundle").Send(objc.Sel("mainBundle")).Send(objc.Sel("bundleIdentifier")))
 	}
 	unLoad          = func() error { return objc.Load(userNotificationsPath) }
 	unCurrentCenter = func() objc.ID {
