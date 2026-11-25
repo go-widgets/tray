@@ -50,6 +50,22 @@ defer t.Quit()
 `Attach` does not fire `OnReady` on any backend: the host's loop is what is
 ready, and it already said so. go-widgets/application uses it for `Spec.Tray`.
 
+### The application's main menu: `SetMainMenu`
+
+`tray.SetMainMenu(appName, menus)` installs `menus` -- a `Menu` whose rows are the
+top-level menus, each row's `Submenu` being the menu -- as the application's main
+menu bar (macOS `NSApp.mainMenu`), from any goroutine, applying again only when
+`menus.Signature()` changed. The application menu (About, Hide, Hide Others,
+Show All, Quit) is put first for you. It reuses the status-item menu's model:
+labels, key equivalents, checkmarks, separators, submenus and `OnClick`.
+
+A row with a `Role` (`tray.RoleItem(tray.RoleCopy)`) is a standard command sent
+down the responder chain, and `tray.EditMenu()` is the standard Edit menu. A
+main menu without one cannot copy or paste in a native text field.
+
+Elsewhere `SetMainMenu` answers `ErrMainMenuUnsupported`: a main menu belongs to
+a window there (see go-widgets/window `SetMenuBar`).
+
 ### System notifications: `Notify`
 
 A real OS notification (not the painted in-window toast), delivered even when

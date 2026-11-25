@@ -30,6 +30,11 @@ func menuSignature(m *Menu) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+// Signature is menuSignature, exported for the packages that put a [Menu] in a
+// window (window.SetMenuBar): they apply a menu again only when it has changed.
+// A nil menu has a signature of its own.
+func (m *Menu) Signature() string { return menuSignature(m) }
+
 func writeMenu(h io.Writer, m *Menu) {
 	if m == nil {
 		_, _ = h.Write([]byte{0})
@@ -56,6 +61,11 @@ func writeMenu(h io.Writer, m *Menu) {
 		// different slices holding the same PNG are the same picture and must
 		// not cost a rebuild.
 		writeBytes(h, it.Icon)
+		// The key equivalent and the role are drawn (and, in a main menu, bound)
+		// too: a menu whose only change is a row's shortcut must not sign the
+		// same as the one on screen.
+		writeStr(h, it.Key)
+		_, _ = h.Write([]byte{byte(it.Mods), byte(it.Role)})
 		_, _ = h.Write([]byte{
 			2,
 			b2b(it.Checked), b2b(it.Disabled), b2b(it.Separator),
