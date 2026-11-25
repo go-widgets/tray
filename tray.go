@@ -65,6 +65,9 @@ type MenuItem struct {
 	// Mods are the modifiers shown with [MenuItem.Key]. Zero draws the character
 	// alone, which is what a bare key equivalent looks like.
 	Mods Mods
+	// Role makes the row one of the platform's standard commands (Copy, Paste,
+	// Quit ...); see [Role]. Honoured in an application's main menu on macOS.
+	Role Role
 	// OnClick is invoked when the item is activated. For a checkbox item the
 	// Checked field is toggled before OnClick runs.
 	OnClick func()

@@ -515,10 +515,24 @@ func (b *darwinBackend) buildMenu(m *Menu) objc.ID {
 		// A modifier mask alone, with no character, is not a key equivalent: the
 		// mask is ignored and nothing is drawn. So the mask is only set when
 		// there is a key to wear it.
+		// A row with a Role sends its AppKit action down the responder chain (a nil
+		// target) instead of to handle:, and borrows the role's label and key
+		// where the row gives none.
+		action, label, key, mods := objc.Sel("handle:"), it.Label, it.Key, it.Mods
+		spec, isRole := roleSpecs[it.Role]
+		if isRole {
+			action = objc.Sel(spec.selector)
+			if label == "" {
+				label = spec.label
+			}
+			if key == "" {
+				key, mods = spec.key, spec.mods
+			}
+		}
 		mi := objc.ClassID("NSMenuItem").Send(objc.Sel("alloc")).Send(objc.Sel("initWithTitle:action:keyEquivalent:"),
-			objc.NSString(it.Label), objc.Sel("handle:"), objc.NSString(it.Key))
-		if it.Key != "" {
-			mi.Send(objc.Sel("setKeyEquivalentModifierMask:"), nsModifierMask(it.Mods))
+			objc.NSString(label), action, objc.NSString(key))
+		if key != "" {
+			mi.Send(objc.Sel("setKeyEquivalentModifierMask:"), nsModifierMask(mods))
 			// ⛔⛔ AND APPKIT IS TOLD NOT TO TRANSLATE IT A SECOND TIME. Since
 			// macOS 12 an NSMenuItem re-maps its key equivalent for the viewer's
 			// keyboard by default -- a kindness meant for applications that
@@ -559,13 +573,21 @@ func (b *darwinBackend) buildMenu(m *Menu) objc.ID {
 		}
 		if it.Submenu != nil {
 			sub := b.buildMenu(it.Submenu)
+			// AppKit reads a menu's own title in places the item's does not reach
+			// (the main menu's Edit and Window menus are recognised by it).
+			sub.Send(objc.Sel("setTitle:"), objc.NSString(label))
 			mi.Send(objc.Sel("setSubmenu:"), sub)
 			sub.Send(objc.Sel("release")) // setSubmenu: retains
 		} else {
 			tag := b.tagSeq
 			b.tagSeq++
 			mi.Send(objc.Sel("setTag:"), tag)
-			mi.Send(objc.Sel("setTarget:"), b.target)
+			if isRole {
+				// The tag above still counts, so the click table stays in step.
+				mi.Send(objc.Sel("setTarget:"), objc.ID(0))
+			} else {
+				mi.Send(objc.Sel("setTarget:"), b.target)
+			}
 			mi.Send(objc.Sel("setEnabled:"), !it.Disabled)
 			if it.checkbox && it.Checked {
 				mi.Send(objc.Sel("setState:"), 1) // NSControlStateValueOn

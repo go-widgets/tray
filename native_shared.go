@@ -146,6 +146,27 @@ var (
 	ErrNoTargetClass = errors.New("tray: the Objective-C action target class could not be created")
 )
 
+// mainMenuTargetError is the outcome of making the main menu's action target: err
+// when the class could not be made, ErrNoTargetClass when it was but its
+// instance is nil (a row with a nil target draws and answers no click).
+func mainMenuTargetError(target uintptr, err error) error {
+	if err != nil {
+		return err
+	}
+	if target == 0 {
+		return ErrNoTargetClass
+	}
+	return nil
+}
+
+// mainMenuAppError says why there is no application to hold a main menu.
+func mainMenuAppError(app uintptr) error {
+	if app == 0 {
+		return ErrNoApplication
+	}
+	return nil
+}
+
 // checkNative reports why the macOS backend cannot show a status item, given
 // the four Objective-C objects it needs, or nil when all four are live.
 //
