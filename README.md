@@ -111,7 +111,11 @@ the same call never succeeds on one OS and fails on another.
     claimed, its menu answers `GetLayout`, and `Quit` withdraws it. What CI
     cannot show is a desktop shell drawing it.
   - **windows** — implemented and compile-verified; the icon and its menu were
-    proven on a Windows 11 VM. `Attach` is compile-verified only.
+    proven on a Windows 11 VM. `Attach` is compile-verified only. On Windows
+    ARM64 the message window's procedure is made by
+    `github.com/go-mswin/win32/wincb`, which preserves D8-D15 that the Go
+    runtime's callback entry does not (golang/go#82503); it is compile-verified
+    there, not run.
   - windows and linux ignore `MenuItem.Icon`: a row carrying one draws as it
     did before, which is a gap, not a promise kept.
   - anything else — `defaultBackend` is nil and `Run` reports `ErrNoBackend`,

@@ -191,7 +191,9 @@ func (b *windowsBackend) Quit() {
 }
 
 // wndProc is the message-only window's procedure. Its signature is all-uintptr
-// so win32.NewCallback (windows.NewCallback) accepts it.
+// so win32.NewCallback accepts it. That is windows.NewCallback behind a thunk
+// that keeps D8-D15 on windows/arm64, where the runtime's callback entry does
+// not (golang/go#82503).
 func (b *windowsBackend) wndProc(hwnd, msgID, wParam, lParam uintptr) uintptr {
 	switch uint32(msgID) {
 	case wmTrayCallback:
