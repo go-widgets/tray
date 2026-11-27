@@ -14,6 +14,7 @@ import (
 	"image"
 	"image/png"
 	"math"
+	"sync"
 )
 
 // menuBarGlyphPoints is the length, in points, of the longer side of the INK of
@@ -148,7 +149,47 @@ func encodePNG(img image.Image) []byte {
 // ink is cropped out of whatever padding the source carries and its longer side
 // is menuBarGlyphPoints, so the glyph is the size of the system's own. Empty
 // input yields no bitmaps and no error (a tray without an icon).
+//
+// The answer is remembered per source, because an animated icon asks for the
+// same few frames again and again and the decode, crop, two resamples and two
+// encodes are Go heap garbage each time (measured on a CI runner: +17 to +28 MB
+// resident over 8000 refreshes of two 18-pixel frames before this). The memory
+// is bounded by glyphCacheMax sources; the slices are shared and read-only.
 func glyphPNGs(src []byte) (wPts, hPts int, one, two []byte, err error) {
+	if len(src) == 0 {
+		return 0, 0, nil, nil, nil
+	}
+	glyphMu.Lock()
+	e, ok := glyphMemo[string(src)]
+	glyphMu.Unlock()
+	if ok {
+		return e.w, e.h, e.one, e.two, e.err
+	}
+	wPts, hPts, one, two, err = buildGlyphPNGs(src)
+	glyphMu.Lock()
+	if len(glyphMemo) >= glyphCacheMax {
+		clear(glyphMemo)
+	}
+	glyphMemo[string(src)] = glyphEntry{wPts, hPts, one, two, err}
+	glyphMu.Unlock()
+	return wPts, hPts, one, two, err
+}
+
+// glyphCacheMax bounds [glyphPNGs]'s memory: a tray shows a handful of icons.
+const glyphCacheMax = 32
+
+type glyphEntry struct {
+	w, h     int
+	one, two []byte
+	err      error
+}
+
+var (
+	glyphMu   sync.Mutex
+	glyphMemo = map[string]glyphEntry{}
+)
+
+func buildGlyphPNGs(src []byte) (wPts, hPts int, one, two []byte, err error) {
 	img, err := decodeNRGBA(src)
 	if err != nil || img.Bounds().Empty() {
 		return 0, 0, nil, nil, err

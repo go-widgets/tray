@@ -133,6 +133,32 @@ func TestGlyphPNGsAre1xAnd2xOfOnePointSize(t *testing.T) {
 	}
 }
 
+// An animated icon asks for the same frames over and over: the second ask is the
+// first one's answer, not a new decode, and the memory held stays bounded.
+func TestGlyphPNGsAreRememberedAndBounded(t *testing.T) {
+	src := paddedGlyphPNG(18, image.Rect(3, 4, 15, 15))
+	_, _, one, _, _ := glyphPNGs(src)
+	_, _, again, _, _ := glyphPNGs(src)
+	if len(one) == 0 || &one[0] != &again[0] {
+		t.Fatal("the same source was encoded twice")
+	}
+	if _, _, _, _, err := glyphPNGs([]byte("x")); err == nil {
+		t.Fatal("garbage must be an error")
+	}
+	if _, _, _, _, err := glyphPNGs([]byte("x")); err == nil {
+		t.Error("a remembered failure must stay a failure")
+	}
+	for i := 0; i < 3*glyphCacheMax; i++ {
+		glyphPNGs(paddedGlyphPNG(18+i, image.Rect(3, 4, 15, 15)))
+	}
+	glyphMu.Lock()
+	n := len(glyphMemo)
+	glyphMu.Unlock()
+	if n > glyphCacheMax {
+		t.Errorf("%d sources remembered, bound is %d", n, glyphCacheMax)
+	}
+}
+
 // The glyph fills the same share of its cell whatever padding its source carried,
 // which is what makes it the size of its neighbours.
 func TestGlyphSizeDoesNotDependOnThePadding(t *testing.T) {
