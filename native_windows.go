@@ -41,6 +41,7 @@ var (
 	procDestroyMenu         = win32.User32.NewProc("DestroyMenu")
 	procDestroyIcon         = win32.User32.NewProc("DestroyIcon")
 	procCreateIconIndirect  = win32.User32.NewProc("CreateIconIndirect")
+	procGetSystemMetrics    = win32.User32.NewProc("GetSystemMetrics")
 
 	procShellNotifyIcon = win32.Shell32.NewProc("Shell_NotifyIconW")
 
@@ -282,13 +283,31 @@ func (b *windowsBackend) buildMenu(m *Menu) uintptr {
 	return hmenu
 }
 
-// makeIcon turns PNG bytes into an HICON (0 when there is no icon).
+// smCxSmIcon is GetSystemMetrics' index for the width of a small icon: the size
+// the notification area draws, 16 at 96 DPI, 20 at 120, 24 at 144 and 32 at 192.
+const smCxSmIcon = 49
+
+// smallIconPixels is that size for this process's DPI awareness, never below the
+// 16-pixel base (a failed call returns 0).
+func smallIconPixels() int {
+	n, _, _ := procGetSystemMetrics.Call(smCxSmIcon)
+	if int(n) < 16 {
+		return 16
+	}
+	return int(n)
+}
+
+// makeIcon turns PNG bytes into an HICON (0 when there is no icon). The icon is
+// made at exactly the notification area's small-icon size with the glyph fitted
+// and centred (see [squareIcon]), so the shell draws it 1:1 instead of
+// stretching an arbitrary canvas, whose padding would make the glyph small.
 func (b *windowsBackend) makeIcon(png []byte) windows.Handle {
-	rgba, w, h, err := pngPixels(png)
-	if err != nil || w == 0 || h == 0 {
+	src, err := decodeNRGBA(png)
+	if err != nil || src == nil {
 		return 0
 	}
-	bgra := toBGRA(rgba)
+	w, h := smallIconPixels(), smallIconPixels()
+	bgra := toBGRA(squareIcon(src, w, squareFill).Pix)
 	hbmColor, _, _ := procCreateBitmap.Call(uintptr(w), uintptr(h), 1, 32, uintptr(unsafe.Pointer(&bgra[0])))
 	// A 1-bpp AND mask, all zero: the color bitmap's alpha channel does the work.
 	rowBytes := ((w + 15) / 16) * 2 // WORD-aligned scanlines

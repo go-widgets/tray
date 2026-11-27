@@ -204,7 +204,7 @@ func (b *linuxBackend) Refresh(t *Tray) {
 	rev := b.rebuild()
 	if sniProps != nil {
 		sniProps.SetMust(sniIface, "Title", t.Tooltip())
-		sniProps.SetMust(sniIface, "IconPixmap", []pixmap{b.iconPixmap(t.Icon())})
+		sniProps.SetMust(sniIface, "IconPixmap", b.iconPixmaps(t.Icon()))
 	}
 	conn.Emit(dbus.ObjectPath(sniPath), sniIface+".NewIcon")
 	conn.Emit(dbus.ObjectPath(sniPath), sniIface+".NewTitle")
@@ -266,17 +266,23 @@ func (b *linuxBackend) rebuild() uint32 {
 	return b.rev
 }
 
-// iconPixmap converts the tray icon to an ARGB32 SNI pixmap (zero-sized if none).
-func (b *linuxBackend) iconPixmap(png []byte) pixmap {
-	rgba, w, h, err := pngPixels(png)
-	if err != nil || w == 0 || h == 0 {
-		return pixmap{}
+// iconPixmaps converts the tray icon to ARGB32 SNI pixmaps, one per size in
+// sniSizes (see [sniIcons]) so the watcher can pick the one nearest its cell; a
+// single zero-sized pixmap when there is no icon.
+func (b *linuxBackend) iconPixmaps(png []byte) []pixmap {
+	icons := sniIcons(png)
+	if len(icons) == 0 {
+		return []pixmap{{}}
 	}
-	return pixmap{Width: int32(w), Height: int32(h), Bytes: toARGB(rgba)}
+	out := make([]pixmap, len(icons))
+	for i, ic := range icons {
+		out[i] = pixmap{Width: int32(ic.Size), Height: int32(ic.Size), Bytes: ic.ARGB}
+	}
+	return out
 }
 
 func (b *linuxBackend) exportProps(conn *dbus.Conn, t *Tray) error {
-	px := b.iconPixmap(t.Icon())
+	px := b.iconPixmaps(t.Icon())
 	sniSpec := map[string]map[string]*prop.Prop{
 		sniIface: {
 			"Category":   {Value: "ApplicationStatus", Emit: prop.EmitTrue},
@@ -284,7 +290,7 @@ func (b *linuxBackend) exportProps(conn *dbus.Conn, t *Tray) error {
 			"Title":      {Value: t.Tooltip(), Emit: prop.EmitTrue},
 			"Status":     {Value: "Active", Emit: prop.EmitTrue},
 			"IconName":   {Value: "", Emit: prop.EmitTrue},
-			"IconPixmap": {Value: []pixmap{px}, Emit: prop.EmitTrue},
+			"IconPixmap": {Value: px, Emit: prop.EmitTrue},
 			"ItemIsMenu": {Value: true, Emit: prop.EmitTrue},
 			"Menu":       {Value: dbus.ObjectPath(menuPath), Emit: prop.EmitTrue},
 		},
