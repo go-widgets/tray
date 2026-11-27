@@ -417,6 +417,9 @@ func TestLiveMenuBarImageIsPointSizedWithTwoRepresentations(t *testing.T) {
 	if objc.App() == 0 {
 		t.Skip("no shared application in this session")
 	}
+	if nsMenuBarImage(nil) != 0 || nsMenuBarImage([]byte("not a png")) != 0 {
+		t.Fatal("no usable icon must give no image")
+	}
 	img := nsMenuBarImage(paddedGlyphPNG(18, image.Rect(3, 4, 15, 15)))
 	if img == 0 {
 		t.Fatal("no image for a valid PNG")

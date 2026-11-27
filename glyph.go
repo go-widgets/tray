@@ -58,11 +58,14 @@ func inkBounds(img *image.NRGBA) image.Rectangle {
 	return out
 }
 
-// decodeNRGBA decodes PNG data into a straight-alpha image at the origin.
+// decodeNRGBA decodes PNG data into a straight-alpha image at the origin. It
+// never returns nil: no data, or data that does not decode, is an EMPTY image
+// (callers test Bounds().Empty()) so a missing guard downstream produces a wrong
+// answer a test can assert on rather than a nil dereference.
 func decodeNRGBA(data []byte) (*image.NRGBA, error) {
 	pix, w, h, err := pngPixels(data)
-	if err != nil || w == 0 || h == 0 {
-		return nil, err
+	if err != nil {
+		return &image.NRGBA{}, err
 	}
 	return &image.NRGBA{Pix: pix, Stride: 4 * w, Rect: image.Rect(0, 0, w, h)}, nil
 }
@@ -112,6 +115,9 @@ func resample(src *image.NRGBA, r image.Rectangle, w, h int) *image.NRGBA {
 func fitInk(src *image.NRGBA, longest int) *image.NRGBA {
 	ink := inkBounds(src)
 	w, h := ink.Dx(), ink.Dy()
+	if ink.Empty() { // an empty source: one clear pixel, not a division by zero
+		return image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	}
 	if longest < 1 {
 		longest = 1
 	}
@@ -144,7 +150,7 @@ func encodePNG(img image.Image) []byte {
 // input yields no bitmaps and no error (a tray without an icon).
 func glyphPNGs(src []byte) (wPts, hPts int, one, two []byte, err error) {
 	img, err := decodeNRGBA(src)
-	if err != nil || img == nil {
+	if err != nil || img.Bounds().Empty() {
 		return 0, 0, nil, nil, err
 	}
 	g1 := fitInk(img, menuBarGlyphPoints)
@@ -192,7 +198,7 @@ type sniIcon struct {
 // empty or undecodable icon yields none.
 func sniIcons(src []byte) []sniIcon {
 	img, err := decodeNRGBA(src)
-	if err != nil || img == nil {
+	if err != nil || img.Bounds().Empty() {
 		return nil
 	}
 	out := make([]sniIcon, 0, len(sniSizes))

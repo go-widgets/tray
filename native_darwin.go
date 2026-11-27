@@ -155,16 +155,14 @@ func newNativeBackend() Backend { return &darwinBackend{} }
 // says so -- the icon is simply smaller than its neighbours.
 func nsMenuBarImage(src []byte) objc.ID {
 	w, h, one, two, err := glyphPNGs(src)
-	if err != nil || len(one) == 0 {
+	if err != nil || w == 0 {
 		return 0
 	}
 	size := objc.NSSize{Width: float64(w), Height: float64(h)}
+	// initWithSize: does not fail, so there is nothing to test the result of.
 	img := objc.ClassID("NSImage").Send(objc.Sel("alloc")).Send(objc.Sel("initWithSize:"), size)
-	if img == 0 {
-		return 0
-	}
 	for _, png := range [][]byte{one, two} {
-		data := objc.ClassID("NSData").Send(objc.Sel("dataWithBytes:length:"), unsafe.Pointer(&png[0]), uintptr(len(png)))
+		data := objc.ClassID("NSData").Send(objc.Sel("dataWithBytes:length:"), unsafe.Pointer(unsafe.SliceData(png)), uintptr(len(png)))
 		rep := objc.ClassID("NSBitmapImageRep").Send(objc.Sel("alloc")).Send(objc.Sel("initWithData:"), data)
 		if rep == 0 {
 			continue

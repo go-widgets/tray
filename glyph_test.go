@@ -46,11 +46,15 @@ func TestInkBoundsIgnoresPaddingAndFringe(t *testing.T) {
 }
 
 func TestDecodeNRGBA(t *testing.T) {
-	if img, err := decodeNRGBA(nil); img != nil || err != nil {
-		t.Fatalf("no icon: %v %v", img, err)
+	if img, err := decodeNRGBA(nil); !img.Bounds().Empty() || err != nil {
+		t.Fatalf("no icon: %v %v", img.Bounds(), err)
 	}
-	if _, err := decodeNRGBA([]byte("not a png")); err == nil {
-		t.Fatal("garbage must be an error")
+	if img, err := decodeNRGBA([]byte("not a png")); err == nil || !img.Bounds().Empty() {
+		t.Fatal("garbage must be an error and an empty image")
+	}
+	// An empty source fits to one clear pixel instead of dividing by zero.
+	if g := fitInk(&image.NRGBA{}, 16); g.Bounds() != image.Rect(0, 0, 1, 1) || g.Pix[3] != 0 {
+		t.Fatalf("empty source fits to %v", g.Bounds())
 	}
 }
 

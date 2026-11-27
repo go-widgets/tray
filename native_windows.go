@@ -303,7 +303,7 @@ func smallIconPixels() int {
 // stretching an arbitrary canvas, whose padding would make the glyph small.
 func (b *windowsBackend) makeIcon(png []byte) windows.Handle {
 	src, err := decodeNRGBA(png)
-	if err != nil || src == nil {
+	if err != nil || src.Bounds().Empty() {
 		return 0
 	}
 	w, h := smallIconPixels(), smallIconPixels()
