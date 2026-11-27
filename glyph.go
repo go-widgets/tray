@@ -156,9 +156,6 @@ func encodePNG(img image.Image) []byte {
 // resident over 8000 refreshes of two 18-pixel frames before this). The memory
 // is bounded by glyphCacheMax sources; the slices are shared and read-only.
 func glyphPNGs(src []byte) (wPts, hPts int, one, two []byte, err error) {
-	if len(src) == 0 {
-		return 0, 0, nil, nil, nil
-	}
 	glyphMu.Lock()
 	e, ok := glyphMemo[string(src)]
 	glyphMu.Unlock()
