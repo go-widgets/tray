@@ -447,6 +447,17 @@ func TestLiveMenuBarImageIsPointSizedWithTwoRepresentations(t *testing.T) {
 		t.Errorf("representations are %v pixels wide, want [16 32]", pixels)
 	}
 	img.Send(objc.Sel("release"))
+
+	// A PNG that does not decode adds nothing, and is not handed to AppKit as a
+	// nil representation, which raises.
+	if addRepresentation(img0(), []byte("not a png"), sz) {
+		t.Error("bytes that are not an image were added as a representation")
+	}
+}
+
+// img0 is an empty NSImage, +1, for tests that only count its representations.
+func img0() objc.ID {
+	return objc.ClassID("NSImage").Send(objc.Sel("alloc")).Send(objc.Sel("initWithSize:"), objc.NSSize{Width: 1, Height: 1})
 }
 
 // tallPNG encodes a w x h PNG with one opaque pixel, so the bytes are a real

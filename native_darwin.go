@@ -162,25 +162,35 @@ func nsMenuBarImage(src []byte) objc.ID {
 	// initWithSize: does not fail, so there is nothing to test the result of.
 	img := objc.ClassID("NSImage").Send(objc.Sel("alloc")).Send(objc.Sel("initWithSize:"), size)
 	for _, png := range [][]byte{one, two} {
-		// dataWithBytes:length: is autoreleased, and the run loop that would drain
-		// the main thread's pool does not turn between refreshes; with two PNGs
-		// per image the strays add up (measured: +17 MB over 8000 refreshes on a
-		// CI runner, +2 MB on a desktop). A pool of its own frees each one here.
-		objc.AutoreleasePool(func() {
-			data := objc.ClassID("NSData").Send(objc.Sel("dataWithBytes:length:"), unsafe.Pointer(unsafe.SliceData(png)), uintptr(len(png)))
-			rep := objc.ClassID("NSBitmapImageRep").Send(objc.Sel("alloc")).Send(objc.Sel("initWithData:"), data)
-			if rep == 0 {
-				return
-			}
-			// The representation's size in points is what pairs the 2x bitmap with
-			// the 1x one: its pixel count is twice that.
-			rep.Send(objc.Sel("setSize:"), size)
-			img.Send(objc.Sel("addRepresentation:"), rep)
-			rep.Send(objc.Sel("release"))
-		})
+		addRepresentation(img, png, size)
 	}
 	img.Send(objc.Sel("setTemplate:"), IsTemplate(src))
 	return img
+}
+
+// addRepresentation decodes png into a bitmap representation of the given size
+// in points and adds it to img; it reports false, adding nothing, when png does
+// not decode.
+//
+// dataWithBytes:length: is autoreleased, and the run loop that would drain the
+// main thread's pool does not turn between refreshes; with two PNGs per image
+// the strays add up (measured: +17 MB over 8000 refreshes on a CI runner, +2 MB
+// on a desktop). A pool of its own frees each one here.
+func addRepresentation(img objc.ID, png []byte, size objc.NSSize) (added bool) {
+	objc.AutoreleasePool(func() {
+		data := objc.ClassID("NSData").Send(objc.Sel("dataWithBytes:length:"), unsafe.Pointer(unsafe.SliceData(png)), uintptr(len(png)))
+		rep := objc.ClassID("NSBitmapImageRep").Send(objc.Sel("alloc")).Send(objc.Sel("initWithData:"), data)
+		if rep == 0 {
+			return
+		}
+		// The representation's size in points is what pairs the 2x bitmap with
+		// the 1x one: its pixel count is twice that.
+		rep.Send(objc.Sel("setSize:"), size)
+		img.Send(objc.Sel("addRepresentation:"), rep)
+		rep.Send(objc.Sel("release"))
+		added = true
+	})
+	return added
 }
 
 // menuItemPoints is how tall a row's icon is drawn, in points.
