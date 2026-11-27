@@ -381,16 +381,16 @@ func TestLiveImageIsSizedForTheMenuBar(t *testing.T) {
 	// black glyph is enough, the size is the whole subject.
 	png := tallPNG(t, 36, 36)
 
-	img := nsImageFromPNG(png, menuBarPoints)
+	img := nsImageFromPNG(png, menuItemPoints)
 	if img == 0 {
 		t.Fatal("nsImageFromPNG returned a nil image for a valid PNG")
 	}
 	got := objc.Send[objc.NSSize](img, objc.Sel("size"))
-	if got.Height != menuBarPoints {
-		t.Errorf("image is %.1f points tall, want %d — a 22-point bar cannot hold it",
-			got.Height, menuBarPoints)
+	if got.Height != menuItemPoints {
+		t.Errorf("image is %.1f points tall, want %d — a menu row cannot hold it",
+			got.Height, menuItemPoints)
 	}
-	if got.Width != menuBarPoints {
+	if got.Width != menuItemPoints {
 		t.Errorf("a square image came back %.1f x %.1f: the aspect ratio was not kept",
 			got.Width, got.Height)
 	}
@@ -404,6 +404,60 @@ func TestLiveImageIsSizedForTheMenuBar(t *testing.T) {
 		t.Fatalf("control: an unsized NSImage reported %.1f points, want 36 — "+
 			"if AppKit no longer does this, the fix above is guarding nothing", before.Height)
 	}
+}
+
+// TestLiveMenuBarImageIsPointSizedWithTwoRepresentations reads the status
+// item's image back out of AppKit: 16 x 16 points for a square glyph, a template,
+// and exactly two bitmap representations whose pixel sizes are 1x and 2x of that.
+// The source here is the shape that was reported: an 18-pixel canvas holding a
+// 12 x 11 mark, which used to be drawn at 11 points.
+func TestLiveMenuBarImageIsPointSizedWithTwoRepresentations(t *testing.T) {
+	requireWindowServer(t)
+	runtime.LockOSThread()
+	if objc.App() == 0 {
+		t.Skip("no shared application in this session")
+	}
+	if nsMenuBarImage(nil) != 0 || nsMenuBarImage([]byte("not a png")) != 0 {
+		t.Fatal("no usable icon must give no image")
+	}
+	img := nsMenuBarImage(paddedGlyphPNG(18, image.Rect(3, 4, 15, 15)))
+	if img == 0 {
+		t.Fatal("no image for a valid PNG")
+	}
+	sz := objc.Send[objc.NSSize](img, objc.Sel("size"))
+	if sz.Width != menuBarGlyphPoints || sz.Height != 15 { // 16 x (11/12*16 = 14.67)
+		t.Errorf("image is %.1f x %.1f points, want 16 x 15", sz.Width, sz.Height)
+	}
+	if !objc.Send[bool](img, objc.Sel("isTemplate")) {
+		t.Error("a monochrome glyph must be a template image")
+	}
+	reps := img.Send(objc.Sel("representations"))
+	if n := objc.Send[uint](reps, objc.Sel("count")); n != 2 {
+		t.Fatalf("%d representations, want 2 (1x and 2x)", n)
+	}
+	var pixels []int
+	for i := uint(0); i < 2; i++ {
+		rep := reps.Send(objc.Sel("objectAtIndex:"), i)
+		pixels = append(pixels, int(objc.Send[int](rep, objc.Sel("pixelsWide"))))
+		if rs := objc.Send[objc.NSSize](rep, objc.Sel("size")); rs != sz {
+			t.Errorf("representation %d is %v points, want the image's %v", i, rs, sz)
+		}
+	}
+	if pixels[0] != menuBarGlyphPoints || pixels[1] != 2*menuBarGlyphPoints {
+		t.Errorf("representations are %v pixels wide, want [16 32]", pixels)
+	}
+	img.Send(objc.Sel("release"))
+
+	// A PNG that does not decode adds nothing, and is not handed to AppKit as a
+	// nil representation, which raises.
+	if addRepresentation(img0(), []byte("not a png"), sz) {
+		t.Error("bytes that are not an image were added as a representation")
+	}
+}
+
+// img0 is an empty NSImage, +1, for tests that only count its representations.
+func img0() objc.ID {
+	return objc.ClassID("NSImage").Send(objc.Sel("alloc")).Send(objc.Sel("initWithSize:"), objc.NSSize{Width: 1, Height: 1})
 }
 
 // tallPNG encodes a w x h PNG with one opaque pixel, so the bytes are a real

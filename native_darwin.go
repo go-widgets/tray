@@ -143,10 +143,55 @@ type darwinBackend struct {
 
 func newNativeBackend() Backend { return &darwinBackend{} }
 
-// menuBarPoints is how tall a menu-bar icon is drawn, in points. macOS draws
-// its own menu extras at 18 in a 22-point bar; the remaining 4 points are the
-// margin that makes a row of icons look like a row rather than a fence.
-const menuBarPoints = 18
+// nsMenuBarImage builds the NSImage the status item's button shows: a TEMPLATE
+// image whose size is in POINTS and which carries two bitmap representations, a
+// 1x and a 2x, so a Retina bar draws the 2x one at native resolution instead of
+// stretching the 1x.
+//
+// The glyph is sized by its INK, not by its canvas ([glyphPNGs]). The earlier
+// version drew the whole PNG at 18 points; a PNG with its mark centred in
+// generous padding (the fleet's 18-pixel icon has an 12 x 11 mark) therefore
+// showed an 11-point glyph beside Apple's 16-point ones, and nothing in AppKit
+// says so -- the icon is simply smaller than its neighbours.
+func nsMenuBarImage(src []byte) objc.ID {
+	w, h, one, two, err := glyphPNGs(src)
+	if err != nil || w == 0 {
+		return 0
+	}
+	size := objc.NSSize{Width: float64(w), Height: float64(h)}
+	// initWithSize: does not fail, so there is nothing to test the result of.
+	img := objc.ClassID("NSImage").Send(objc.Sel("alloc")).Send(objc.Sel("initWithSize:"), size)
+	for _, png := range [][]byte{one, two} {
+		addRepresentation(img, png, size)
+	}
+	img.Send(objc.Sel("setTemplate:"), IsTemplate(src))
+	return img
+}
+
+// addRepresentation decodes png into a bitmap representation of the given size
+// in points and adds it to img; it reports false, adding nothing, when png does
+// not decode.
+//
+// dataWithBytes:length: is autoreleased, and the run loop that would drain the
+// main thread's pool does not turn between refreshes; with two PNGs per image
+// the strays add up (measured: +17 MB over 8000 refreshes on a CI runner, +2 MB
+// on a desktop). A pool of its own frees each one here.
+func addRepresentation(img objc.ID, png []byte, size objc.NSSize) (added bool) {
+	objc.AutoreleasePool(func() {
+		data := objc.ClassID("NSData").Send(objc.Sel("dataWithBytes:length:"), unsafe.Pointer(unsafe.SliceData(png)), uintptr(len(png)))
+		rep := objc.ClassID("NSBitmapImageRep").Send(objc.Sel("alloc")).Send(objc.Sel("initWithData:"), data)
+		if rep == 0 {
+			return
+		}
+		// The representation's size in points is what pairs the 2x bitmap with
+		// the 1x one: its pixel count is twice that.
+		rep.Send(objc.Sel("setSize:"), size)
+		img.Send(objc.Sel("addRepresentation:"), rep)
+		rep.Send(objc.Sel("release"))
+		added = true
+	})
+	return added
+}
 
 // menuItemPoints is how tall a row's icon is drawn, in points.
 //
@@ -162,12 +207,8 @@ const menuBarPoints = 18
 const menuItemPoints = 16
 
 // nsImageFromPNG builds an NSImage from PNG bytes (nil/empty → nil image),
-// drawn at points points tall.
-//
-// The height is a PARAMETER rather than the bar's constant because the two
-// places this package puts an image are laid out around different things: the
-// menu bar around a 22-point bar, a menu row around its text. See
-// menuBarPoints and menuItemPoints.
+// drawn at points points tall. It is for menu ROWS (see menuItemPoints); the bar
+// uses [nsMenuBarImage].
 func nsImageFromPNG(png []byte, points float64) objc.ID {
 	if len(png) == 0 {
 		return 0
@@ -444,7 +485,7 @@ func (b *darwinBackend) apply(t *Tray) {
 		return
 	}
 	button := b.item.Send(objc.Sel("button"))
-	if img := nsImageFromPNG(t.Icon(), menuBarPoints); img != 0 {
+	if img := nsMenuBarImage(t.Icon()); img != 0 {
 		button.Send(objc.Sel("setImage:"), img)
 		// setImage: retains, so the reference alloc gave us is ours to drop.
 		// Without this every refresh leaks an NSImage and its bitmap. That was
