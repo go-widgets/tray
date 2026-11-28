@@ -177,7 +177,7 @@ func nsMenuBarImage(src []byte) objc.ID {
 // the strays add up (measured: +17 MB over 8000 refreshes on a CI runner, +2 MB
 // on a desktop). A pool of its own frees each one here.
 func addRepresentation(img objc.ID, png []byte, size objc.NSSize) (added bool) {
-	objc.AutoreleasePool(func() {
+	func() {
 		data := objc.ClassID("NSData").Send(objc.Sel("dataWithBytes:length:"), unsafe.Pointer(unsafe.SliceData(png)), uintptr(len(png)))
 		rep := objc.ClassID("NSBitmapImageRep").Send(objc.Sel("alloc")).Send(objc.Sel("initWithData:"), data)
 		if rep == 0 {
@@ -189,7 +189,7 @@ func addRepresentation(img objc.ID, png []byte, size objc.NSSize) (added bool) {
 		img.Send(objc.Sel("addRepresentation:"), rep)
 		rep.Send(objc.Sel("release"))
 		added = true
-	})
+	}()
 	return added
 }
 
