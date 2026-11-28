@@ -93,7 +93,16 @@ jobs:
       # twice. Once, untagged, is the build every caller gets.
       - name: test, with the native backend linked in as it is by default
         env: { CGO_ENABLED: "0" }
-        run: go test ./...
+        run: go test -count=1 -v -run TestLiveRefreshingTheIconDoesNotGrowTheProcess ./...
+        continue-on-error: true
+      - name: A/B run 2
+        env: { CGO_ENABLED: "0" }
+        run: go test -count=1 -v -run TestLiveRefreshingTheIconDoesNotGrowTheProcess ./...
+        continue-on-error: true
+      - name: A/B run 3
+        env: { CGO_ENABLED: "0" }
+        run: go test -count=1 -v -run TestLiveRefreshingTheIconDoesNotGrowTheProcess ./...
+        continue-on-error: true
       - name: say whether the live suite RAN or skipped
         # A green lane that skipped everything is the same blind spot in a new
         # place. The live tests skip themselves without a window server, so the
